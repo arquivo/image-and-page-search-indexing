@@ -67,8 +67,8 @@ public class TextDocumentDataSerializer implements JsonSerializer<TextDocumentDa
         obj.add("inlinksInternal", context.serialize(src.getInlinkSurtsInternal().size()));
         obj.add("inlinksExternal", context.serialize(src.getInlinkSurtsExternal().size()));
         
-        obj.add("inlinkAnchorsInternal", context.serialize(src.getInlinkAnchorsInternal()));
-        obj.add("inlinkAnchorsExternal", context.serialize(src.getInlinkAnchorsExternal()));
+        obj.add("inlinkAnchorsInternal", context.serialize(src.getConcatedInlinkAnchorsInternal()));
+        obj.add("inlinkAnchorsExternal", context.serialize(src.getConcatedInlinkAnchorsExternal()));
         obj.add("captureCount", context.serialize(src.getCaptureCount()));
         //obj.add("statusCode", context.serialize(src.getStatusCode()));
         

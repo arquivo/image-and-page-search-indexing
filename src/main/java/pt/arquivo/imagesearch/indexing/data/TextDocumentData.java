@@ -304,7 +304,7 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
     private List<String> getInlinkAnchors(Map<Outlink,Outlink> inlinks) {
         ArrayList<String> inlinkAnchors = new ArrayList<>();
         for (Outlink inlink : inlinks.keySet()) {
-            if (inlink.getAnchor() != null && !inlink.getAnchor().trim().isEmpty())
+            if (inlink.getAnchor() != null && !inlink.getAnchor().trim().isEmpty() && !inlinkAnchors.contains(inlink.getAnchor()))
                 inlinkAnchors.add(inlink.getAnchor());
         }
         return inlinkAnchors;
@@ -313,8 +313,8 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
     private List<String> getInlinkSurts(Map<Outlink,Outlink> inlinks) {
         Set<String> inlinkSurt = new HashSet<>();
         for (Outlink inlink : inlinks.keySet()) {
-            if (inlink.getSurt() != null && !inlink.getSurt().trim().isEmpty())
-            inlinkSurt.add(inlink.getSurt());
+            if (inlink.getSurt() != null && !inlink.getSurt().trim().isEmpty() && !inlinkSurt.contains(inlink.getSurt()))
+                inlinkSurt.add(inlink.getSurt());
         }
         return new ArrayList<>(inlinkSurt);
     }
@@ -325,6 +325,14 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
 
     public List<String> getInlinkAnchorsExternal() {
         return getInlinkAnchors(inlinksExternal);
+    }
+
+    public String getConcatedInlinkAnchorsExternal() {
+        return String.join(" ", getInlinkAnchors(inlinksExternal));
+    }
+
+    public String getConcatedInlinkAnchorsInternal() {
+        return String.join(" ", getInlinkAnchors(inlinksInternal));
     }
 
     public List<String> getInlinkSurtsInternal() {
