@@ -15,6 +15,8 @@ import org.apache.hadoop.mapreduce.counters.GenericCounter;
 import org.apache.log4j.Logger;
 import org.apache.tika.config.TikaConfig;
 import org.apache.tika.exception.TikaException;
+import org.apache.tika.language.detect.LanguageDetector;
+import org.apache.tika.language.detect.LanguageResult;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
@@ -254,7 +256,11 @@ public class DocumentInformationExtractor implements InformationExtractor {
             }
 
         } else {
-            parseTextRecord(record, mimeType, arcName, url, timestamp, offset, statusCode);
+            try {
+                parseTextRecord(record, mimeType, arcName, url, timestamp, offset, statusCode);
+            } catch (IOException e) {
+                logger.error("Error parsing text record: " + record.getHeader().getUrl(), e);
+            }
         }
 
     }
@@ -322,11 +328,16 @@ public class DocumentInformationExtractor implements InformationExtractor {
             String redirectUrl = record.getRedirectURL();
             parseRedirectRecord(record.getWARCRecord(), mimeType, arcName, url, timestamp, offset, statusCode, redirectUrl);
         } else {
-            parseTextRecord(record.getWARCRecord(), mimeType, arcName, url, timestamp, offset, statusCode);
+            try {
+                parseTextRecord(record.getWARCRecord(), mimeType, arcName, url, timestamp, offset, statusCode);
+            } catch (IOException e) {
+                // TODO Auto-generated catch block
+                logger.error("Error parsing text record: " + url, e);
+            }
         }
     }
     public TextDocumentData parseTextRecord(InputStream record, String mimeType, String arcName, String url,
-            String timestamp, long offset, int statusCode) {
+            String timestamp, long offset, int statusCode) throws IOException {
         getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_READ).increment(1);
         getCounter(mimeToCounterReported(mimeType)).increment(1);
 
@@ -373,30 +384,8 @@ public class DocumentInformationExtractor implements InformationExtractor {
                 return textDocumentData;
             }
         } catch (IOException e) {
-            // TODO Auto-generated catch block
             logger.error("Error parsing record: " + url, e);
         }
-
-        /*
-        class AllTagMapper implements HtmlMapper {
-
-            @Override
-            public String mapSafeElement(String name) {
-                return name.toLowerCase();
-            }
-
-            @Override
-            public boolean isDiscardElement(String name) {
-                return false;
-            }
-
-            @Override
-            public String mapSafeAttribute(String elementName, String attributeName) {
-                return attributeName.toLowerCase();
-            }
-
-        }
-         */
 
          Parser parser = null;
          if (mimeType.equals("text/html")) {
@@ -452,17 +441,30 @@ public class DocumentInformationExtractor implements InformationExtractor {
                 return textDocumentData;
             }
 
+            LanguageDetector detector = LanguageDetector.getDefaultLanguageDetector().loadModels();
+
+            detector.addText(body);
+
             String title = metadata.get("dc:title");
 
             if (title == null || title.isEmpty())
                 title = metadata.get("title");
+                
 
 
             if (title == null || title.isEmpty())
                 title = body.substring(0, Math.min(body.length(), TITLE_FROM_BODY_MAX_LENGTH));
 
             textDocumentData.addTitle(title);
+            
+            detector.addText(title);
 
+            LanguageResult languageResult = detector.detect();
+
+            if (languageResult != null) {
+                textDocumentData.setLanguage(languageResult.getLanguage());
+                textDocumentData.setLanguageConfidence(languageResult.getConfidence().toString());
+            }
 
             List<String> metadataStrings = new LinkedList<>();
 

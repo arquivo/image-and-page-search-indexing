@@ -144,6 +144,9 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
 
     private boolean isRedirect;
 
+    private String language;
+    private String languageConfidence;
+
 
     public TextDocumentData(TextDocumentData other){
         this.collection = new ArrayList<>(other.collection);
@@ -170,6 +173,8 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
         this.code = other.code;
         this.captureCount = other.captureCount;
         this.isRedirect = other.isRedirect;
+        this.language = other.language;
+        this.languageConfidence = other.languageConfidence;
         
     }
 
@@ -186,7 +191,9 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
         this.urls = new ArrayList<>();
         this.metadata = new ArrayList<>();
         this.urlTimestamp = new ArrayList<>();
-        this.captureCount = 1;
+        this.captureCount = 1;  
+        this.language = "";
+        this.languageConfidence = "";
     }
 
     @Override
@@ -581,6 +588,30 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
         this.addURLTimestamp(urlTimestamp);
     }
 
+    public void setLanguage(String language) {
+        if (language == null || language.isEmpty()) {
+            this.language = "";
+        } else {
+            this.language = language;
+        }
+    }
+
+    public void setLanguageConfidence(String confidence) {
+        if (confidence == null || confidence.isEmpty()) {
+            this.languageConfidence = "";
+        } else {
+            this.languageConfidence = confidence;
+        }
+    }
+
+    public String getLanguage() {
+        return language;
+    }
+
+    public String getLanguageConfidence() {
+        return languageConfidence;
+    }
+
     @Override
     public void write(DataOutput out) throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -626,6 +657,8 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
             this.captureCount = other.captureCount;
             this.isRedirect = other.isRedirect;
             this.urlTimestamp = other.urlTimestamp;
+            this.language = other.language;
+            this.languageConfidence = other.languageConfidence;
 
         } catch (ClassNotFoundException e) {
             System.err.println("Error reading TextDocumentData from Writable");
