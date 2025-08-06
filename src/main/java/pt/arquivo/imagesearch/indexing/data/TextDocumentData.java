@@ -147,6 +147,8 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
     private String language;
     private String languageConfidence;
 
+    private String fileExtension;
+
 
     public TextDocumentData(TextDocumentData other){
         this.collection = new ArrayList<>(other.collection);
@@ -175,7 +177,7 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
         this.isRedirect = other.isRedirect;
         this.language = other.language;
         this.languageConfidence = other.languageConfidence;
-        
+        this.fileExtension = other.fileExtension;
     }
 
     public TextDocumentData() {
@@ -192,8 +194,6 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
         this.metadata = new ArrayList<>();
         this.urlTimestamp = new ArrayList<>();
         this.captureCount = 1;  
-        this.language = "";
-        this.languageConfidence = "";
     }
 
     @Override
@@ -612,6 +612,22 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
         return languageConfidence;
     }
 
+    public String getFileExtension() {
+        if (fileExtension == null || fileExtension.isEmpty()) {
+            return "";
+        }
+        return fileExtension;
+    }
+
+    public void setFileExtension(String fileExtension) {
+        if (fileExtension == null || fileExtension.isEmpty()) {
+            this.fileExtension = "";
+        } else {
+            this.fileExtension = fileExtension;
+        }
+    }
+    
+
     @Override
     public void write(DataOutput out) throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -659,6 +675,7 @@ public class TextDocumentData implements Comparable<LocalDateTime>, Writable, Se
             this.urlTimestamp = other.urlTimestamp;
             this.language = other.language;
             this.languageConfidence = other.languageConfidence;
+            this.fileExtension = other.fileExtension;
 
         } catch (ClassNotFoundException e) {
             System.err.println("Error reading TextDocumentData from Writable");

@@ -64,6 +64,7 @@ public class TextDocumentDataSerializer implements JsonSerializer<TextDocumentDa
         //obj.addProperty("protocol", src.getProtocol());
         //obj.addProperty("urlHash", src.getURLHash());
         //obj.add("outlinks", context.serialize(src.getOutlinks()));
+        
         obj.add("inlinksInternal", context.serialize(src.getInlinkSurtsInternal().size()));
         obj.add("inlinksExternal", context.serialize(src.getInlinkSurtsExternal().size()));
         
@@ -73,8 +74,8 @@ public class TextDocumentDataSerializer implements JsonSerializer<TextDocumentDa
 
         obj.addProperty("language", src.getLanguage());
         obj.addProperty("languageConfidence", src.getLanguageConfidence());
-        //obj.add("statusCode", context.serialize(src.getStatusCode()));
-        
+        obj.addProperty("fileExtension", src.getFileExtension());
+
         //obj.addProperty("safe", 0);
         //obj.addProperty("reputation", 0.5);
         //obj.addProperty("blocked", 0);

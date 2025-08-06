@@ -3,6 +3,7 @@ package pt.arquivo.imagesearch.indexing.processors;
 import org.archive.format.warc.WARCConstants;
 import org.archive.io.ArchiveRecord;
 import org.archive.io.warc.WARCRecord;
+import org.checkerframework.checker.units.qual.t;
 import org.jsoup.helper.StringUtil;
 
 import pt.arquivo.imagesearch.indexing.DocumentIndexerWithDupsJob;
@@ -206,6 +207,13 @@ public class DocumentInformationExtractor implements InformationExtractor {
         if (this.tmpCounters.get(mimeType) == null)
             this.tmpCounters.put(mimeType, new GenericCounter(mimeType, mimeType));
         this.tmpCounters.get(mimeType).increment(1);
+
+
+        String url = record.getWARCRecord().getHeader().getUrl();
+        if (!allowURL(url)) {
+            logger.warn("Skipping record with URL: " + url);
+            return;
+        }
         parseTextRecord(record, warcName);
 
     }
@@ -241,6 +249,12 @@ public class DocumentInformationExtractor implements InformationExtractor {
             logger.error("Error parsing record: " + record.getHeader().getUrl(), e);
         }
         String url = record.getHeader().getUrl();
+
+        if (!allowURL(url)) {
+            logger.warn("Skipping record with URL: " + url);
+            return;
+        }
+
         String timestamp = record.getMetaData().getDate();
         long offset = record.getMetaData().getOffset();
         int statusCode = record.getStatusCode();
@@ -361,6 +375,8 @@ public class DocumentInformationExtractor implements InformationExtractor {
             return null;
         }
 
+        String fileExtension = getFileExtension(url);
+        textDocumentData.setFileExtension(fileExtension);
         try {
             textDocumentData.addURL(url, timestamp, collection);
             textDocumentData.setTimestamp(timestamp);
@@ -643,5 +659,31 @@ public class DocumentInformationExtractor implements InformationExtractor {
                 entriesRedirect.put(surt, pageImageData);
             }
         }
+    }
+
+    private boolean allowURL(String url) {
+        return !(url == null || url.isEmpty() || url.equals("null")
+            || url.startsWith("dns:") || url.endsWith(".css") || url.endsWith(".js"));
+    }
+
+    private String getFileExtension(String url) {
+        if (url == null || url.isEmpty()) {
+            return "";
+        }
+        // get last part of the URL after the last slash
+        String lastPart = url.substring(url.lastIndexOf('/') + 1);
+
+        if (lastPart.contains("?")) {
+            lastPart = lastPart.substring(0, lastPart.indexOf('?'));
+        }
+
+        if (lastPart.contains("#")) {
+            lastPart = lastPart.substring(0, lastPart.indexOf('#'));
+        }
+        // if there is a dot, return the part after the last dot
+        if (lastPart.contains(".")) {
+            return lastPart.substring(lastPart.lastIndexOf('.') + 1).toLowerCase();
+        }
+        return "";
     }
 }
