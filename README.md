@@ -1,8 +1,12 @@
-# Image Search Indexing
+# Image and Page Search Indexing
 An Hadoop image indexer for Web archiving - supports ARC/WARC files.
 
 
-## Algorithm 
+## Page Algorithm
+
+TODO
+
+## Image Algorithm 
 ### Phase 1 - ImageIndexerWithDups
 - Iterate through all ARC/WARC records to find all HTML records (i.e. records with mimetype that starts with text/html) and image records
   - For page records
