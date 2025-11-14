@@ -1,6 +1,7 @@
 package pt.arquivo.imagesearch.indexing.data.hadoop;
 
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.RecordReader;
@@ -14,7 +15,7 @@ import java.io.IOException;
  * This class is used to read (W)ARC files when they come from HDFS
  * Used in the HDFSImageIndexerWithDupsJob clause
  */
-public class ArchiveFileInputFormat extends FileInputFormat {
+public class ArchiveFileInputFormat extends FileInputFormat<LongWritable, WritableArchiveRecord> {
 
     /**
      * Transforms the (W)ARC into a reader that is supported by Hadoop
@@ -26,7 +27,7 @@ public class ArchiveFileInputFormat extends FileInputFormat {
      * @throws InterruptedException
      */
     @Override
-    public RecordReader createRecordReader(InputSplit split, TaskAttemptContext context) throws IOException, InterruptedException {
+    public RecordReader<LongWritable, WritableArchiveRecord> createRecordReader(InputSplit split, TaskAttemptContext context) throws IOException, InterruptedException {
         ArchiveFileRecordReader reader = new ArchiveFileRecordReader();
         reader.initialize(split, context);
         return reader;

@@ -30,13 +30,16 @@ public class FullImageIndexerJob {
         String collection = args[1];
 
         assert args.length >= 3 : "Missing number of warcs per map";
-        int linesPerMap = Integer.parseInt(args[2]);
+        String linesPerMap = args[2];
 
         assert args.length >= 4 : "Missing number of reduces";
-        int reducesCount = Integer.parseInt(args[3]);
+        String reducesCount = args[3];
 
         assert args.length >= 5 : "Missing modeIsHDFS";
-        boolean modeIsHDFS = Boolean.parseBoolean(args[4]);
+        String modeIsHDFS = args[4];
+
+        assert args.length >= 6 : "Missing outputDirJob1";
+        String outputDirJob1Arg = args[5];
 
         assert args.length >= 7 : "Missing warcFileTempBaseDir";
         String warcFileTempBaseDir = args[6];
@@ -46,7 +49,7 @@ public class FullImageIndexerJob {
         String outputDirJob1 = "/image-search-indexing/output/" + collection + "/" + currentTime + "_dups";
         String outputDirJob2 = "/image-search-indexing/output/" + collection + "/" + currentTime + "_nodups";
 
-        String[] argsJob1 = new String[]{args[0], args[1], args[2], args[3], args[4], outputDirJob1, args[6]};
+        String[] argsJob1 = new String[]{hdfsArcsPath, collection, linesPerMap, reducesCount, modeIsHDFS, outputDirJob1, warcFileTempBaseDir};
 
         int exitCode = ToolRunner.run(new ImageIndexerWithDupsJob(), argsJob1);
 
@@ -59,7 +62,7 @@ public class FullImageIndexerJob {
             System.exit(exitCode);
         }
 
-        String[] argsJob2 = new String[]{args[1], args[3], args[5], outputDirJob1, outputDirJob2};
+        String[] argsJob2 = new String[]{collection, reducesCount, outputDirJob1Arg, outputDirJob1, outputDirJob2};
         exitCode = ToolRunner.run(new DupDigestMergerJob(), argsJob2);
 
         // delete intermediate results from job1, as only the output of the final job is needed

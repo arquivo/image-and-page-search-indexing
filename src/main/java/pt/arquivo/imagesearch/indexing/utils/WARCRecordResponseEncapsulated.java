@@ -10,8 +10,6 @@ import java.util.Locale;
 import java.util.Map;
 
 import org.apache.commons.httpclient.Header;
-import org.apache.commons.httpclient.HttpException;
-import org.apache.commons.httpclient.StatusLine;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -28,12 +26,13 @@ import org.brotli.dec.BrotliInputStream;
 public class WARCRecordResponseEncapsulated {
     public final Log LOG = LogFactory.getLog(WARCRecordResponseEncapsulated.class);
 
-    private static final String TRANSFER_ENCODING = "transfer-encoding";
+    // private static final String TRANSFER_ENCODING = "transfer-encoding";
     private static final String CONTENT_ENCODING = "content-encoding";
+    private static final String STATUS_STRING = "httpclient-bad-header-line-failed-parse";
 
-    private static final String CHUNKED = "chunked";
-    private static final String GZIPPED = "gzip";
-    private static final String DEFLATE = "deflate";
+    // private static final String CHUNKED = "chunked";
+    // private static final String GZIPPED = "gzip";
+    // private static final String DEFLATE = "deflate";
     private static final String BROTLI = "br";
 
 
@@ -43,7 +42,7 @@ public class WARCRecordResponseEncapsulated {
      * <p>
      * May be null if record is not http.
      */
-    private StatusLine httpStatus = null;
+    // private StatusLine httpStatus = null;
 
     /**
      * Http headers.
@@ -57,7 +56,7 @@ public class WARCRecordResponseEncapsulated {
      * <p>
      * There may be no status.
      */
-    private String statusCode = null;
+    // private String statusCode = null;
 
     /**
      * URL for the WARC
@@ -109,16 +108,17 @@ public class WARCRecordResponseEncapsulated {
 
 
     private void readHttpHeader() throws IOException {
-        String statusLinestr = LaxHttpParser.readLine(warcrecord, WARCRecord.WARC_HEADER_ENCODING);
+        // String statusLinestr = LaxHttpParser.readLine(warcrecord, WARCRecord.WARC_HEADER_ENCODING);
 
+        /*
         try {
             this.httpStatus = new StatusLine(statusLinestr);
-            this.statusCode = String.valueOf(this.httpStatus.getStatusCode());
         } catch (HttpException e) {
             LOG.error("HttpException parsing statusCode isIndex ", e);
         } catch (Exception e) {
             LOG.error("Exception parsing statusCode isIndex ", e);
         }
+        */
 
         this.httpHeaders = LaxHttpParser.parseHeaders(warcrecord, WARCRecord.WARC_HEADER_ENCODING);
 
@@ -165,37 +165,32 @@ public class WARCRecordResponseEncapsulated {
      * content-type content.
      */
     public String getContentMimetype() {
-        return (String) headerFields.get(WARCRecord.MIMETYPE_FIELD_KEY);
+        String mimeType = (String) headerFields.get(WARCRecord.MIMETYPE_FIELD_KEY);
+        if (mimeType != null) {
+            mimeType = mimeType.split(";")[0].trim();
+        } else {
+            mimeType = "unknown";
+        }
+        return mimeType;
     }
 
     /**
-     * Get the WARCRecord content bytes
+     * Get the WARCRecord input stream
      *
-     * @return byte array with content
+     * @return InputStream with content
      */
-    public byte[] getContentBytes() {
+    public InputStream getInputStream() {
 
         Boolean usingBrotli = false;
         try {
-            InputStream astream = warcrecord;
-            byte[] results = IOUtils.toByteArray(astream);
-            InputStream stream = new ByteArrayInputStream(results);
-
-            if (results.length == 0)
-                return results;
-
+            InputStream stream = warcrecord;
             String contentEncoding = (String) headerFields.get(CONTENT_ENCODING);
 
             if (contentEncoding != null && contentEncoding.toLowerCase().contains(BROTLI)) {
                 stream = new BrotliInputStream(stream);
                 usingBrotli = true;
             }
-
-            //if (transferEncoding != null && transferEncoding.toLowerCase().contains(CHUNKED))
-            //    System.out.println("Chunked");
-
-            results = IOUtils.toByteArray(TikaInputStream.get(stream));
-            return results;
+            return stream;
         } catch (IOException e) {
             // Sometimes Brotli decoding fails. This tries to fix that.
             if(e.getMessage().toLowerCase().contains("brotli")){
@@ -208,8 +203,7 @@ public class WARCRecordResponseEncapsulated {
                     } else {
                         stream = new BrotliInputStream(new ByteArrayInputStream(results));
                     }
-                    results = IOUtils.toByteArray(TikaInputStream.get(stream));
-                    return results;
+                    return TikaInputStream.get(stream);
                 } catch (IOException err) {
                     String errorMessage = String.format("Error getting content byte for WARC, %s.%s Brotli related error detected, attempted to fix it but failed. Original Error: %s, New Error: %s", 
                         this.warcURL,
@@ -223,6 +217,21 @@ public class WARCRecordResponseEncapsulated {
             String errorMessage = String.format("Error getting content byte for WARC, %s. Message: %s", this.warcURL, e.getMessage());
             LOG.error(errorMessage);
             throw new RuntimeException(errorMessage);
+        }
+    }
+
+
+    /**
+     * Get the WARCRecord content bytes
+     *
+     * @return byte array with content
+     * @throws IOException
+     */
+    public byte[] getContentBytes() {
+        try {
+            return IOUtils.toByteArray(TikaInputStream.get(getInputStream()));
+        } catch (IOException e) {
+            throw new RuntimeException(e.getMessage());
         }
     }
 
@@ -263,5 +272,24 @@ public class WARCRecordResponseEncapsulated {
             return null;
         }
         return year + month + day + hour + minute + second;
+    }
+
+    public int getStatusCode() {
+        String statusCode = (String) headerFields.get(STATUS_STRING);
+        try {
+            statusCode = statusCode.split(" ")[1];
+            return Integer.parseInt(statusCode);
+        } catch (Throwable e) {
+            // assume -1 if code is not processable
+            return -1;
+        }
+    }
+
+    public String getRedirectURL() {
+        try {
+            return (String) headerFields.get("location");
+        } catch (Throwable e) {
+            return null;
+        }
     }
 }

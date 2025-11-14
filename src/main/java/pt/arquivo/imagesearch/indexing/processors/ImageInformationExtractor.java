@@ -35,7 +35,8 @@ import java.util.regex.Pattern;
 /**
  * Auxiliary class to extract metadat from pages and images
  */
-public class ImageInformationExtractor {
+@SuppressWarnings("rawtypes")
+public class ImageInformationExtractor implements InformationExtractor {
 
     /**
      * Image file extensions to be included when parsing from <a> tags
@@ -336,15 +337,6 @@ public class ImageInformationExtractor {
                 this.getCounter(ImageIndexerWithDupsJob.IMAGE_COUNTERS.IMAGES_IN_WARC_PARSED).increment(1);
 
             return imageData;
-                /*Gson gson = new Gson();
-                try {
-                    context.write(new Text(imgSurt), new Text(gson.toJson(imageData)));
-                } catch (IOException e) {
-                    e.printStackTrace();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-                */
         }
         return null;
     }
@@ -878,11 +870,17 @@ public class ImageInformationExtractor {
      * @param imgSrc URL to split
      * @return URL tokens
      */
-    public String getURLSrcTokens(String imgSrc)  {
+    public static String getURLSrcTokens(String imgSrc)  {
         try {
             imgSrc = URLDecoder.decode(imgSrc, "UTF-8"); /*Escape imgSrc URL e.g %C3*/
         } catch (Exception ignored) {
 
+        }
+        if (imgSrc.startsWith("http://") || imgSrc.startsWith("https://")) {
+            imgSrc = imgSrc.substring(imgSrc.indexOf("://"));
+        }
+        if (imgSrc.startsWith("www.")) {
+            imgSrc = imgSrc.substring(imgSrc.indexOf("."));
         }
         return ImageSearchIndexingUtil.parseURL(imgSrc);
     }

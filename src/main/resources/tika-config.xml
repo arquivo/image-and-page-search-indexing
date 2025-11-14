@@ -1,0 +1,43 @@
+
+<properties>
+  <parsers>
+    <parser class="org.apache.tika.parser.DefaultParser">
+      <mime>application/msword</mime>
+      <mime>application/pdf</mime>
+      <mime>application/postscript</mime>
+      <mime>application/rss+xml</mime>
+      <mime>application/vnd.ms-excel</mime>
+      <mime>application/vnd.ms-powerpoint</mime>
+      <mime>application/vnd.oasis.opendocument.text</mime>
+      <mime>application/vnd.oasis.opendocument.text-template</mime>
+      <mime>application/vnd.oasis.opendocument.text-master</mime>
+      <mime>application/vnd.oasis.opendocument.text-web</mime>
+      <mime>application/vnd.oasis.opendocument.presentation</mime>
+      <mime>application/vnd.oasis.opendocument.presentation-template</mime>
+      <mime>application/vnd.oasis.opendocument.spreadsheet</mime>
+      <mime>application/vnd.oasis.opendocument.spreadsheet-template</mime>
+      <mime>application/vnd.sun.xml.calc</mime>
+      <mime>application/vnd.sun.xml.calc.template</mime>
+      <mime>application/vnd.sun.xml.impress</mime>
+      <mime>application/vnd.sun.xml.impress.template</mime>
+      <mime>application/vnd.sun.xml.writer</mime>
+      <mime>application/vnd.sun.xml.writer.template</mime>
+      <mime>application/xhtml+xml</mime>
+      <mime>application/x-bzip2</mime>
+      <mime>application/x-gzip</mime>
+      <mime>application/x-kword</mime>
+      <mime>application/x-kspread</mime>
+      <mime>application/x-shockwave-flash</mime>
+      <mime>application/zip</mime>
+      <mime>text/html</mime>
+      <mime>text/plain</mime>
+      <mime>text/richtext</mime>
+      <mime>text/rtf</mime>
+      <mime>text/csv</mime>
+      <mime>text/sgml</mime>
+      <mime>text/tab-separated-values</mime>
+      <mime>text/xml</mime>
+      <parser-exclude class="org.apache.tika.parser.ocr.TesseractOCRParser"/>
+    </parser>
+  </parsers>
+</properties>

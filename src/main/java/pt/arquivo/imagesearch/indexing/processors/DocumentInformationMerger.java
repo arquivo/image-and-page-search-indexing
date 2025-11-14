@@ -2,35 +2,34 @@ package pt.arquivo.imagesearch.indexing.processors;
 
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapreduce.Counter;
-import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.counters.GenericCounter;
-import pt.arquivo.imagesearch.indexing.DupDigestMergerJob;
-import pt.arquivo.imagesearch.indexing.data.FullImageMetadata;
+
+import pt.arquivo.imagesearch.indexing.DocumentDupDigestMergerJob;
+import pt.arquivo.imagesearch.indexing.data.TextDocumentData;
 
 import java.util.HashMap;
 import java.util.List;
 
 /**
- * Merges FullImageMetadata records for deduplication
+ * Merges TextDocumentData records for deduplication
  */
-@SuppressWarnings("rawtypes")
-public class ImageInformationMerger {
+public class DocumentInformationMerger {
 
     /**
      * Maximum supported number of objects to merge
      */
-    public static final int MAX_OBJECTS_TO_MERGE = 10000;
+    public static final int MAX_OBJECTS_TO_MERGE = 1000;
 
 
     /**
      * Metadata entry that will contain the merged record
      */
-    private FullImageMetadata entry;
+    private TextDocumentData entry;
 
     /**
      * Hadoop context
      */
-    private Reducer.Context context = null;
+    private DocumentDupDigestMergerJob.Reduce.Context context = null;
 
     /**
      * Local counter cache
@@ -42,7 +41,7 @@ public class ImageInformationMerger {
      *
      * @param context Hadoop context
      */
-    public ImageInformationMerger(Reducer.Context context) {
+    public DocumentInformationMerger(DocumentDupDigestMergerJob.Reduce.Context context) {
         this.context = context;
         reset();
     }
@@ -50,7 +49,7 @@ public class ImageInformationMerger {
     /**
      * Non-Hadoop constructor
      */
-    public ImageInformationMerger() {
+    public DocumentInformationMerger() {
         this.localCounters = new HashMap<>();
         reset();
     }
@@ -71,21 +70,63 @@ public class ImageInformationMerger {
         }
     }
 
-    public void merge(FullImageMetadata metadata) {
-        getCounter(DupDigestMergerJob.COUNTERS.RECORDS_IN).increment(1);
-
-        if (entry == null) {
-            entry = new FullImageMetadata(metadata);
-        } else {
-            entry.merge(metadata);
-        }
-    }
-
     /**
-     * Reset the Merger to work with a new FullImageMetadata object
+     * Reset the Merger to work with a new TextDocumentData object
      */
     public void reset() {
         entry = null;
+    }
+
+    /**
+     * Merge all objects into the current TextDocumentData object
+     *
+     * @param values TextDocumentData values to merge
+     * @return merged object
+     */
+    public int mergeAll(Iterable<TextDocumentData> values) {
+        int counter = 0;
+        for (TextDocumentData metadata : values) {
+            entry = TextDocumentData.merge(entry, metadata);
+            counter++;
+        }
+        return counter;
+    }
+
+    /**
+     * Merge all objects into the current TextDocumentData object
+     * (to be used in Haddop)
+     *
+     * @param values TextDocumentData values to merge
+     * @return merged object
+     */
+    public int mergeAllHadoop(Iterable<Writable> values) {
+        int counter = 0;
+        for (Writable value : values) {
+            TextDocumentData metadata =  new TextDocumentData((TextDocumentData) value);
+            entry = TextDocumentData.merge(entry, metadata);
+            counter++;
+            if (counter >= MAX_OBJECTS_TO_MERGE)
+                break;
+        }
+        return counter;
+    }
+
+    /**
+     * Merge all objects into the current TextDocumentData object
+     *
+     * @param values TextDocumentData values to merge
+     * @return merged object
+     */
+    public int mergeAll(List<Object> values) {
+        int counter = 0;
+        for (Object value : values) {
+            TextDocumentData metadata = (TextDocumentData) value;
+            entry = TextDocumentData.merge(entry, metadata);
+            counter++;
+            if (counter >= MAX_OBJECTS_TO_MERGE)
+                break;
+        }
+        return counter;
     }
 
     /**
@@ -93,60 +134,7 @@ public class ImageInformationMerger {
      *
      * @return the best matched object
      */
-    public FullImageMetadata getBestMatch() {
-        entry.assignImagesToPages();
+    public TextDocumentData getBestMatch() {
         return entry;
-    }
-
-    /**
-     * Merge all objects into the current FullImageMetadata object
-     *
-     * @param values FullImageMetadata values to merge
-     * @return merged object
-     */
-    public int mergeAll(Iterable<FullImageMetadata> values) {
-        int counter = 0;
-        for (FullImageMetadata metadata : values) {
-            merge(metadata);
-            counter++;
-        }
-        return counter;
-    }
-
-    /**
-     * Merge all objects into the current FullImageMetadata object
-     * (to be used in Haddop)
-     *
-     * @param values FullImageMetadata values to merge
-     * @return merged object
-     */
-    public int mergeAllHadoop(Iterable<Writable> values) {
-        int counter = 0;
-        for (Writable value : values) {
-            FullImageMetadata metadata = (FullImageMetadata) value;
-            merge(metadata);
-            counter++;
-            if (counter >= MAX_OBJECTS_TO_MERGE)
-                break;
-        }
-        return counter;
-    }
-
-    /**
-     * Merge all objects into the current FullImageMetadata object
-     *
-     * @param values FullImageMetadata values to merge
-     * @return merged object
-     */
-    public int mergeAll(List<Object> values) {
-        int counter = 0;
-        for (Object value : values) {
-            FullImageMetadata metadata = (FullImageMetadata) value;
-            merge(metadata);
-            counter++;
-            if (counter >= MAX_OBJECTS_TO_MERGE)
-                break;
-        }
-        return counter;
     }
 }

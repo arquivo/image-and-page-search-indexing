@@ -4,9 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapreduce.Counter;
 import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
 import pt.arquivo.imagesearch.indexing.data.FullImageMetadata;
 import pt.arquivo.imagesearch.indexing.data.ImageData;
 import pt.arquivo.imagesearch.indexing.data.MultiPageImageData;
@@ -15,6 +13,7 @@ import pt.arquivo.imagesearch.indexing.data.serializers.MultiPageImageDataSerial
 
 import java.io.*;
 import java.net.URL;
+import java.nio.charset.Charset;
 import java.util.*;
 
 import static org.junit.Assert.assertEquals;
@@ -48,6 +47,7 @@ public class FullPipelineTest {
         LocalFullImageIndexer.Map map = new LocalFullImageIndexer.Map(collection);
 
         BufferedReader br = new BufferedReader(new FileReader(path));
+
         for (String line; (line = br.readLine()) != null; ) {
             if (!line.trim().isEmpty()) {
                 URL warcURL = classLoader.getResource(line.trim());
@@ -56,6 +56,8 @@ public class FullPipelineTest {
                 map.map(warcPath);
             }
         }
+
+        br.close();
 
         HashMap<String, List<Object>> mapResults = map.cleanup();
         HashMap<String, List<FullImageMetadata>> reduceResults = new HashMap<>();
@@ -101,7 +103,7 @@ public class FullPipelineTest {
         URL warcURL = classLoader.getResource("outputs/FullPipelineTest.jsonl");
         assertNotNull(warcURL);
         final File expected = new File(warcURL.getPath());
-        assertEquals(FileUtils.readFileToString(expected), out.toString());
+        assertEquals(FileUtils.readFileToString(expected, Charset.defaultCharset()), out.toString());
     }
 }
 

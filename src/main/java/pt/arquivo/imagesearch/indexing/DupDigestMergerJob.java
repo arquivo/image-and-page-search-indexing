@@ -69,11 +69,7 @@ public class DupDigestMergerJob extends Configured implements Tool {
         RECORDS_IN,
         RECORDS_OUT,
         RECORDS_WITH_METADATA,
-        RECORDS_WITHOUT_METADATA,
-        URL_IMAGES_PAGESALL,
-        URL_IMAGESALL_PAGES,
-        URL_IMAGES_PAGES
-
+        RECORDS_WITHOUT_METADATA
     }
 
     /**
@@ -94,7 +90,7 @@ public class DupDigestMergerJob extends Configured implements Tool {
         private final Logger logger = Logger.getLogger(Map.class);
 
         @Override
-        public void setup(Mapper.Context context) {
+        public void setup(Map.Context context) {
             String logLevel = System.getenv("INDEXING_LOG_LEVEL");
             if (logLevel != null) {
                 org.apache.log4j.Logger.getRootLogger().setLevel(org.apache.log4j.Level.toLevel(logLevel));
@@ -127,7 +123,7 @@ public class DupDigestMergerJob extends Configured implements Tool {
         OUTPUT_MODE outputMode;
 
         @Override
-        public void setup(Reducer.Context context) {
+        public void setup(Reduce.Context context) {
             String logLevel = System.getenv("INDEXING_LOG_LEVEL");
             if (logLevel != null) {
                 org.apache.log4j.Logger.getRootLogger().setLevel(org.apache.log4j.Level.toLevel(logLevel));
@@ -254,7 +250,7 @@ public class DupDigestMergerJob extends Configured implements Tool {
             FileStatus[] fileStatus = hdfs.listStatus(new Path(inputDir));
             long latestValueLong = 0;
             for (FileStatus fileStat : fileStatus) {
-                if (fileStat.isDir()) {
+                if (fileStat.isDirectory()) {
                     if (fileStat.getPath().getName().endsWith("_dups")) {
                         try {
                             String name = fileStat.getPath().getName().replace("_dups", "");

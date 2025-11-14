@@ -18,7 +18,6 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.*;
 import org.apache.hadoop.mapreduce.lib.input.NLineInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
-import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
 import org.apache.log4j.Logger;
 import pt.arquivo.imagesearch.indexing.data.hadoop.ArchiveFileInputFormat;
 import pt.arquivo.imagesearch.indexing.processors.ImageInformationExtractor;
@@ -194,8 +193,10 @@ public class ImageIndexerWithDupsJob extends Configured implements Tool {
                 URL url = null;
                 try {
                     url = new URL(arcURL);
-                } catch (MalformedURLException ignored) {
-
+                } catch (MalformedURLException e) {
+                    logger.error("Error downloading WARC: " + arcURL + " " + e.getMessage());
+                    context.getCounter(IMAGE_COUNTERS.WARCS_DOWNLOAD_ERROR).increment(1);
+                    throw e;
                 }
                 String[] surl = url.getPath().split("/");
                 String arcName = surl[surl.length - 1];
@@ -256,7 +257,7 @@ public class ImageIndexerWithDupsJob extends Configured implements Tool {
         ImageInformationMerger merger;
 
         @Override
-        public void setup(Reducer.Context context) {
+        public void setup(Reduce.Context context) {
             String logLevel = System.getenv("INDEXING_LOG_LEVEL");
             if (logLevel != null) {
                 org.apache.log4j.Logger.getRootLogger().setLevel(org.apache.log4j.Level.toLevel(logLevel));
@@ -280,7 +281,7 @@ public class ImageIndexerWithDupsJob extends Configured implements Tool {
          */
         public void reduce(Text key, Iterable<Writable> values, Context context) {
             merger.reset();
-            int counter = merger.mergeAllHadoop(values);
+            merger.mergeAllHadoop(values);
             FullImageMetadata result = merger.getBestMatch();
             logger.debug(String.format("Found %d pages and %d images", result.getPageImageDatasValues().size(), result.getImageDatasValues().size()));
 

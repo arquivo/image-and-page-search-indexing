@@ -89,6 +89,7 @@ public class FullImageMetadata implements Writable, Serializable {
      *
      * @param metadata the object to be cloned
      */
+    @SuppressWarnings("unchecked")
     public FullImageMetadata(FullImageMetadata metadata) {
         imageDatas = (TreeMap<ImageData, ImageData>) metadata.getImageDatas().clone();
         pageImageDatas = (TreeMap<PageImageData, PageImageData>) metadata.getPageImageDatas().clone();

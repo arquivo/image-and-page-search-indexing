@@ -2,6 +2,7 @@ package pt.arquivo.imagesearch.indexing.utils;
 
 import java.io.*;
 import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
@@ -13,7 +14,8 @@ import java.util.regex.Pattern;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import pt.arquivo.imagesearch.indexing.ImageIndexerWithDupsJob;
-import pt.arquivo.imagesearch.indexing.processors.ImageInformationExtractor;
+import pt.arquivo.imagesearch.indexing.processors.InformationExtractor;
+
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.log4j.Logger;
 import org.archive.format.warc.WARCConstants;
@@ -64,7 +66,7 @@ public class ImageSearchIndexingUtil {
      * @param context Hadoop context
      * @param consumer object to send back the processed object
      */
-    public static void readArcRecords(String arcURL, ImageInformationExtractor context, Consumer<ARCRecord> consumer) {
+    public static void readArcRecords(String arcURL, InformationExtractor context, Consumer<ARCRecord> consumer) {
         logger.debug("Reading ARC records for: " + arcURL);
         ARCReader reader;
         try {
@@ -151,7 +153,7 @@ public class ImageSearchIndexingUtil {
         return contentBuffer.toByteArray();
     }
 
-    public static void readWarcRecords(String warcURL, ImageInformationExtractor context, Consumer<WARCRecordResponseEncapsulated> consumer) {
+    public static void readWarcRecords(String warcURL, InformationExtractor context, Consumer<WARCRecordResponseEncapsulated> consumer) {
         logger.debug("Reading WARC records for: " + warcURL);
         ArchiveReader reader = null;
         try {
@@ -206,7 +208,7 @@ public class ImageSearchIndexingUtil {
      * @param context Hadoop context
      * @return object to send back the processed object
      */
-    public static WARCRecordResponseEncapsulated parseWarcRecord(WARCRecord warcRecord, ImageInformationExtractor context){
+    public static WARCRecordResponseEncapsulated parseWarcRecord(WARCRecord warcRecord, InformationExtractor context){
         String warcRecordType = (String) warcRecord.getHeader().getHeaderValue(WARCConstants.HEADER_KEY_TYPE);
         String warcRecordMimetype = warcRecord.getHeader().getMimetype();
         String warcName = ((String) warcRecord.getHeader().getHeaderValue(WARCConstants.READER_IDENTIFIER_FIELD_KEY));
@@ -216,7 +218,7 @@ public class ImageSearchIndexingUtil {
                 Map<String, Object> headers = new HashMap<>();
                 headers.put(WARCConstants.CONTENT_LENGTH.toLowerCase(), String.valueOf(warcRecord.getHeader().getContentLength()));
                 headers.put(WARCConstants.CONTENT_TYPE.toLowerCase(), warcRecordMimetype);
-                headers.put(warcRecord.MIMETYPE_FIELD_KEY.toLowerCase(), warcRecordMimetype);
+                headers.put(WARCConstants.MIMETYPE_FIELD_KEY.toLowerCase(), warcRecordMimetype);
 
                 context.getCounter(ImageIndexerWithDupsJob.IMAGE_COUNTERS.RECORDS_READ).increment(1);
                 return new WARCRecordResponseEncapsulated(warcRecord, headers, warcName);
@@ -266,7 +268,7 @@ public class ImageSearchIndexingUtil {
      * @return page HTML as String
      * @throws IOException if page is malformed
      */
-    public static String decode(byte[] arcRecordBytes, ImageInformationExtractor context) throws IOException {
+    public static String decode(byte[] arcRecordBytes, InformationExtractor context) throws IOException {
         String recordEncoding = ImageSearchIndexingUtil.guessEncoding(arcRecordBytes);
         InputStream is = new ByteArrayInputStream(arcRecordBytes);
         String html = IOUtils.toString(is, recordEncoding);
@@ -296,7 +298,7 @@ public class ImageSearchIndexingUtil {
     public static String parseURL(String toParse) {
         if (toParse.startsWith("hash:"))
             return "";
-        return cleanPunctuation(toParse);
+        return cleanPunctuation(toParse).trim();
     }
 
     /**
@@ -306,7 +308,7 @@ public class ImageSearchIndexingUtil {
      * @return string without punctuation
      */
     public static String cleanPunctuation(String toParse) {
-        return String.join(" ", toParse.split(SPLIT_PATTERN));
+        return String.join(" ", toParse.split(SPLIT_PATTERN)).replaceAll("\\s+", " ");
     }
 
     /**
@@ -344,6 +346,17 @@ public class ImageSearchIndexingUtil {
                 ((HttpURLConnection) conn).disconnect();
             }
         }
+    }
+
+    public static boolean isInteralOutlink(String url, String outlink){
+        // page hosts match
+        try {
+            URL urlVal = new URL(url);
+            URL outlinkVal = new URL(outlink);
+            return urlVal.getHost().equals(outlinkVal.getHost());
+        } catch (MalformedURLException e) {
+            return false;
+        }     
     }
 
 }

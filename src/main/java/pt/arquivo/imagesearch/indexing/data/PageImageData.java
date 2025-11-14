@@ -17,7 +17,6 @@ import pt.arquivo.imagesearch.indexing.utils.ImageSearchIndexingUtil;
 
 public class PageImageData implements Comparable<LocalDateTime>, Serializable {
 
-    private static final int MAX_ADD_THRESHOLD = 50;
 
     /**
      * Collection where to which this page matches
@@ -65,11 +64,6 @@ public class PageImageData implements Comparable<LocalDateTime>, Serializable {
      * Image capture timestamp
      */
     private LocalDateTime imgTimestamp;
-
-    /**
-     *  Image capture timestamp in archive format
-     */
-    private long imgTimespan;
 
     /**
      * Oldest matching page title
@@ -479,7 +473,6 @@ public class PageImageData implements Comparable<LocalDateTime>, Serializable {
      */
     public void assignImageToPage(ImageData id, LocalDateTime correct) {
         this.setImgTimestamp(correct);
-        this.setImageTimespan(id.getTimespan());
         this.setImageDigest(id.getContentHash());
         this.setImgHeight(id.getHeight());
         this.setImgWidth(id.getWidth());
@@ -586,10 +579,6 @@ public class PageImageData implements Comparable<LocalDateTime>, Serializable {
 
     public LocalDateTime getOldestSurtDate() {
         return oldestSurtDate;
-    }
-
-    public void setImageTimespan(long imageTimespan) {
-        this.imgTimespan = imageTimespan;
     }
 }
 

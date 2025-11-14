@@ -28,6 +28,10 @@ public class WARCInformationParser {
 
     public static ContentInfoUtil util = new ContentInfoUtil();
 
+    public static enum SURTMatchType {
+        SAME_SURT, SAME_FQDN, SAME_SLDN, DIFFERENT_SLDN, INVALID
+    }
+
     /**
      * Parse Archive date time into LocalDateTime object
      *
@@ -74,6 +78,56 @@ public class WARCInformationParser {
             return url;
         return SURT.toSURT(url);
     }
+
+    /**
+     * Compares two SURTs
+     *
+     * @param surt1 first SURT
+     * @param surt2 second SURT
+     * @return SURTMatchType
+     */
+    public static SURTMatchType compareSURTs(String surt1, String surt2) {
+
+        if (surt1 == null || surt2 == null || surt1.isEmpty() || surt2.isEmpty())
+            return SURTMatchType.INVALID;
+
+        if (surt1.equals(surt2))
+            return SURTMatchType.SAME_SURT;
+
+        String[] surt1Parts = surt1.split("\\)");
+        String[] surt2Parts = surt2.split("\\)");
+        // remove port
+        if (surt1Parts[0].contains(":"))
+            surt1Parts[0] = surt1Parts[0].substring(0, surt1Parts[0].indexOf(":"));
+        if (surt2Parts[0].contains(":"))
+            surt2Parts[0] = surt2Parts[0].substring(0, surt2Parts[0].indexOf(":"));
+
+        if (surt1Parts[0].equals(surt2Parts[0]))
+            return SURTMatchType.SAME_FQDN;
+
+        String[] domain1Parts = surt1Parts[0].split(",");
+        String[] domain2Parts = surt2Parts[0].split(",");
+
+        if (domain1Parts.length >= 2 && domain2Parts.length >= 2 &&
+            domain2Parts[0].equals(domain1Parts[0]) &&
+            domain2Parts[1].equals(domain1Parts[1]))
+            return SURTMatchType.SAME_SLDN;
+
+        return SURTMatchType.DIFFERENT_SLDN;
+        
+    }
+
+    /**
+     * Is an internal inlink
+     *
+     * @param surt1 first SURT
+     * @param surt2 second SURT
+     * @return true if internal inlink
+     */
+    public static boolean isInternal(String surt1, String surt2) {
+        return compareSURTs(surt1, surt2).ordinal() <= SURTMatchType.SAME_SLDN.ordinal();
+    }
+
 
     /**
      * Returns image dimensions in pixels

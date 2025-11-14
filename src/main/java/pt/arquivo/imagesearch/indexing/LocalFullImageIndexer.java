@@ -3,7 +3,6 @@ package pt.arquivo.imagesearch.indexing;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import org.apache.log4j.BasicConfigurator;
-import org.apache.log4j.Level;
 import pt.arquivo.imagesearch.indexing.data.FullImageMetadata;
 import pt.arquivo.imagesearch.indexing.data.ImageData;
 import pt.arquivo.imagesearch.indexing.data.MultiPageImageData;
@@ -51,8 +50,10 @@ public class LocalFullImageIndexer {
             URL url = null;
             try {
                 url = new URL(arcURL);
-            } catch (MalformedURLException ignored) {
-
+            } catch (MalformedURLException e) {
+                logger.error("Error parsing URL: " + arcURL, e);
+                return;
+                
             }
 
             String[] surl = url.getPath().split("/");
@@ -100,7 +101,6 @@ public class LocalFullImageIndexer {
         public FullImageMetadata reduce(String key, List<Object> values) {
 
             merger.reset();
-            int counter = merger.mergeAll(values);
             FullImageMetadata result = merger.getBestMatch();
             logger.debug(String.format("Found %d pages and %d images", result.getPageImageDatasValues().size(), result.getImageDatasValues().size()));
 
@@ -141,7 +141,7 @@ public class LocalFullImageIndexer {
             logger.debug("Reducing: " + key);
 
             merger.reset();
-            int counter = merger.mergeAll(values);
+            merger.mergeAll(values);
             FullImageMetadata result = merger.getBestMatch();
 
             merger.getCounter(DupDigestMergerJob.COUNTERS.RECORDS_OUT).increment(1);
@@ -260,7 +260,7 @@ public class LocalFullImageIndexer {
 
         System.out.println("FullImageIndexer$IMAGE_COUNTERS");
 
-        for (ImageIndexerWithDupsJob.IMAGE_COUNTERS counter : ImageIndexerWithDupsJob.IMAGE_COUNTERS.values()) {
+        for (DocumentIndexerWithDupsJob.DOCUMENT_COUNTERS counter : DocumentIndexerWithDupsJob.DOCUMENT_COUNTERS.values()) {
             Counter c = map.indexer.getCounter(counter);
             System.out.println("\t" + c.getName() + ": " + c.getValue());
         }
