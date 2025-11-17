@@ -101,6 +101,7 @@ public class LocalFullImageIndexer {
         public FullImageMetadata reduce(String key, List<Object> values) {
 
             merger.reset();
+            merger.mergeAll(values);
             FullImageMetadata result = merger.getBestMatch();
             logger.debug(String.format("Found %d pages and %d images", result.getPageImageDatasValues().size(), result.getImageDatasValues().size()));
 
