@@ -1,0 +1,34 @@
+name: Java CI with Maven
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java: [ '8', '11', '21', '23' ]
+        maven-version: [ '3.9.9' ]
+      fail-fast: false
+
+    steps:
+    - name: Set up Maven
+      uses: s4u/setup-maven-action@v1.19.0
+      with:
+        maven-version: ${{ matrix.maven-version }}
+
+    - name: Clean
+      run: mvn clean
+
+    - name: Compile
+      run: mvn compile
+
+    - name: Run tests
+      run: mvn test
+
+    - name: Package
+      run: mvn package -DskipTests
