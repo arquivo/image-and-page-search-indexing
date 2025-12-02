@@ -1,11 +1,11 @@
 #!/bin/bash
 #
 # Usage:
-#   ./indexImages.sh Collections.txt
+#   ./indexText.sh Collections.txt
 #
 # Collections.txt has in each line the name of the collection to index
 #
-# Run inside a screen, this should be synchronous because we can only IndexImages after creating the database
+# Run inside a screen, will index each collection sequentially
 #
 set -x
 
