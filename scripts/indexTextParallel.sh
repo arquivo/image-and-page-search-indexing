@@ -23,7 +23,7 @@
 
 
 set -euo pipefail
-set -x
+
 
 print_usage() {
     echo "Usage:"

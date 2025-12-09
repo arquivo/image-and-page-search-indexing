@@ -21,7 +21,6 @@
 
 
 set -euo pipefail
-set -x
 
 # =========================
 # Functions
@@ -55,21 +54,25 @@ fi
 # =========================
 # Configurable Variables
 # =========================
-OUTPUT_SERVER="p82.arquivo.pt"
-HISTORY_SERVER="p43.arquivo.pt"
-HISTORY_PORT="19888"
-HADOOP_BIN="/opt/hadoop-3.4.1/bin"
-WORKING_PATH="/data/indexing_tmp"
-HADOOP_JAR="text-search-indexing.jar"
+OUTPUT_SERVER="p82.arquivo.pt"        # Server where the JSONLs will be stored
+OUTPUT_DIR="/data/text-search/data"   # Directory where the JSONLs will be stored
+HISTORY_SERVER="p43.arquivo.pt"       # Hadoop master
+HISTORY_PORT="19888"                  # Hadoop history server port
+HADOOP_BIN="/opt/hadoop-3.4.1/bin"    # Hadoop binaries location
+WORKING_PATH="/data/indexing_tmp"     # Directory for temporary hadoop files (/tmp could get clogged if not for this)
+HADOOP_JAR="text-search-indexing.jar" # Text indexer JAR file 
 INDEXER_CLASS="pt.arquivo.imagesearch.indexing.FullDocumentIndexerJob"
+                                      # Text indexer class for indexing + deduplication 
+LOG_DIR="./logs"                      # Directory for indexer logs
+COUNTER_DIR="./counter"               # Directory for indexer counters
 
 # =========================
 # Script Logic
 # =========================
 timestamp=$(date +%s)
-ssh "$OUTPUT_SERVER" "mkdir /data/text-search/data/$timestamp"
+ssh "$OUTPUT_SERVER" "mkdir -p $OUTPUT_DIR/$timestamp"
 
-mkdir -p counter
+mkdir -p "$COUNTER_DIR"
 JOB_NAME=$1
 TIMESTAMP=$(date +%s)
 COLLECTION="$JOB_NAME"
@@ -81,7 +84,7 @@ fi
 "$HADOOP_BIN"/hadoop jar "$HADOOP_JAR" "$INDEXER_CLASS" \
   /user/root/"$JOB_NAME"_ARCS.txt "$COLLECTION" 1 300 \
   "${WORKING_PATH}_${JOB_NAME}_dups" "${WORKING_PATH}_${JOB_NAME}" "$WORKING_PATH" \
-  &> logs/"$JOB_NAME"_$TIMESTAMP.log
+  &> "$LOG_DIR"/"$JOB_NAME"_$TIMESTAMP.log
 
 # Extract the counters from the finished applications
 "$HADOOP_BIN"/yarn application -appStates FINISHED -list < /dev/null \
@@ -89,16 +92,16 @@ fi
   | while read ln; do
       curl --compressed -H "Accept: application/json" -X GET \
       "http://${HISTORY_SERVER}:${HISTORY_PORT}/ws/v1/history/mapreduce/jobs/job_$ln/counters" \
-      | python -m json.tool > counter/counters_$ln.json;
+      | python -m json.tool > "$COUNTER_DIR"/counters_$ln.json;
     done
 
 # Extract the times from the job history
 curl --compressed -H "Accept: application/json" -X GET \
   "http://${HISTORY_SERVER}:${HISTORY_PORT}/ws/v1/history/mapreduce/jobs/" \
-  > counter/times_"$TIMESTAMP"_"$JOB_NAME".json
+  > "$COUNTER_DIR"/times_"$TIMESTAMP"_"$JOB_NAME".json
 
 # Copy JSONLs to output server
-ssh "$OUTPUT_SERVER" "$HADOOP_BIN/hdfs dfs -copyToLocal ${WORKING_PATH}_${JOB_NAME} /data/text-search/data/$timestamp"
+ssh "$OUTPUT_SERVER" "$HADOOP_BIN/hdfs dfs -copyToLocal ${WORKING_PATH}_${JOB_NAME} $OUTPUT_DIR/$timestamp"
 
 # Delete JSONLs from HDFS
 ssh "$OUTPUT_SERVER" "$HADOOP_BIN/hdfs dfs -rm -r -f ${WORKING_PATH}_${JOB_NAME}"
