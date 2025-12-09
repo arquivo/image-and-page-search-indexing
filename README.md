@@ -1,8 +1,8 @@
 # Image and Page Search Indexing
 An Hadoop image and document information extractor for Web archiving - supports ARC/WARC files.
 
-## Page Algorithm
-Extracts textual document information from ARC/WARC files and outputs strctured JSONL files for Solr/ES indexing.
+## Page and Document Algorithm
+Extracts metadata from archived text documents (e.g. .html, .doc. .pdf) and outputs strctured JSONL files for Solr/ES indexing.
 
 #### Phase 1 - DocumentIndexerWithDupsJob.java: Extract information for pages
 **Map**: Extract text, metadata and outlinks from (W)ARCS (**DocumentInformationExtractor**)
@@ -80,14 +80,46 @@ Extracts metadata for images in HTML document information from ARC/WARC files an
 ```mvn clean install``` 
 
 The compiled jar with dependencies will be placed in target/image-search-indexing.jar
+This .jar file has multiple main classes than can be used to extract the either page, image and inlink metadata.
 
 ## Run
 
-
-Create a .txt file where each line contains the path to a downloadable ARC/WARC file (WARC list file) and store it in Hadoop HDFS
+Page and document indexer (pt.arquivo.imagesearch.indexing.FullDocumentIndexerJob)
 
 ```
-hadoop jar image-search-indexing.jar pt.arquivo.imagesearch.indexing.FullImageIndexerJob <WARC list location in HDFS> <collection name> <WARCs per map> <number of reduces> <WARCs in HDFS: true or false> <output format: COMPACT or FULL>
+hadoop jar image-search-indexing.jar pt.arquivo.imagesearch.indexing.FullDocumentIndexerJob
+  <WARC list location in HDFS>
+  <collection name> <WARCs per map>
+  <number of reduces>
+  <output path map: /data/indexing_tmp_$COLLECTION_dups>
+  <output path reduce: /data/indexing_tmp_$COLLECTION>
+  <WARC download path: /data/indexing_tmp>
+```
+
+Inlinks indexer (pt.arquivo.imagesearch.indexing.FullDocumentIndexerJob)
+
+```
+hadoop jar image-search-indexing.jar pt.arquivo.imagesearch.indexing.FullDocumentIndexerJob
+  <WARC list location in HDFS>
+  <collection name> <WARCs per map>
+  <number of reduces>
+  <output path map: /data/indexing_tmp_$COLLECTION_dups>
+  <output path reduce: /data/indexing_tmp_$COLLECTION>
+  <WARC download path: /data/indexing_tmp>
+  INLINKS
+```
+
+Image indexer (pt.arquivo.imagesearch.indexing.FullImageIndexerJob)
+
+```
+hadoop jar image-search-indexing.jar pt.arquivo.imagesearch.indexing.FullImageIndexerJob
+  <WARC list location in HDFS>
+  <collection name>
+  <WARCs per map>
+  <number of reduces>
+  <WARCs in HDFS: true or false>
+  <output format: COMPACT or FULL>
+  <WARC download path: /data/indexing_tmp>
 ```
 
 **WARC list location in HDFS**: Location of the (W)ARC file list in HDFS
@@ -96,14 +128,17 @@ hadoop jar image-search-indexing.jar pt.arquivo.imagesearch.indexing.FullImageIn
 
 **WARCs per map**: total number of (W)ARCs to process per Map process. Larger is faster, but can lead to Map timeouts in some collections (recommended: 1-5)
 
-**number of reduces**: total number of reduces (recommended: 150)
+**number of reduces**: total number of reduces (recommended: 300)
 
 **WARCs in HDFS**: true or false, whether the (W)ARCs are in HDFS or in external HTTP server
 
 **output format**: COMPACT or FULL> use COMPACT for the current Solr schema
 
+**output path map**: output path on HDFS for the Map stage of the job (will be deleted at end)
 
+**output path reduce**: output path on HDFS for the Reduce and final stage of the job
 
+**WARC download path**: local path where (W)ARCs will be downloaded to
 
 
 ## Requirements
