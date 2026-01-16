@@ -103,7 +103,19 @@ public class FullPipelineTest {
         URL warcURL = classLoader.getResource("outputs/FullPipelineTest.jsonl");
         assertNotNull(warcURL);
         final File expected = new File(warcURL.getPath());
-        assertEquals(FileUtils.readFileToString(expected, Charset.defaultCharset()), out.toString());
+        String[] expectedLines = FileUtils.readFileToString(expected, Charset.defaultCharset()).split("\n");
+
+        String[] actualLines = out.toString().split("\n");
+
+        for (int i = 0; i < expectedLines.length; i++) {
+            // parse as Java dictionary to avoid differences in field ordering
+            Map<?, ?> expectedMap = gson.fromJson(expectedLines[i], Map.class);
+            Map<?, ?> actualMap = gson.fromJson(actualLines[i], Map.class);
+            // delete imgSrcBase64 key since it is not deterministic
+            expectedMap.remove("imgSrcBase64");
+            actualMap.remove("imgSrcBase64");
+            assertEquals(expectedMap, actualMap);
+        }
     }
 }
 

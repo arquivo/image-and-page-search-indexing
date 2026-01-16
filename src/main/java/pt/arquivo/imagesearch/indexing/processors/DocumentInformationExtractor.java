@@ -663,7 +663,8 @@ public class DocumentInformationExtractor implements InformationExtractor {
 
     private boolean allowURL(String url) {
         return !(url == null || url.isEmpty() || url.equals("null")
-            || url.startsWith("dns:") || url.endsWith(".css") || url.endsWith(".js"));
+            || url.startsWith("dns:") || url.endsWith(".css") || url.endsWith(".js")
+            || url.endsWith(".gif"));
     }
 
     private String getFileExtension(String url) {
@@ -673,13 +674,12 @@ public class DocumentInformationExtractor implements InformationExtractor {
         // get last part of the URL after the last slash
         String lastPart = url.substring(url.lastIndexOf('/') + 1);
 
-        if (lastPart.contains("?")) {
-            lastPart = lastPart.substring(0, lastPart.indexOf('?'));
+        for (char charToRemove : new char[] { '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', ':', '"', '?', '#' }) {
+            if (lastPart.contains(String.valueOf(charToRemove))) {
+                lastPart = lastPart.substring(0, lastPart.indexOf(charToRemove));
+            }
         }
-
-        if (lastPart.contains("#")) {
-            lastPart = lastPart.substring(0, lastPart.indexOf('#'));
-        }
+        
         // if there is a dot, return the part after the last dot
         if (lastPart.contains(".")) {
             return lastPart.substring(lastPart.lastIndexOf('.') + 1).toLowerCase();
