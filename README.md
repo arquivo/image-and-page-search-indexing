@@ -3,8 +3,31 @@ An Hadoop image indexer for Web archiving - supports ARC/WARC files.
 
 
 ## Page Algorithm
+### Phase 1 - DocumentIndexerWithDupsJob
+#### DocumentIndexerWithDupsJob.Map
+- Iterate through all records in all (W)ARCs in a collection
+- Extract the ones that match the [MimeType list]([url](https://github.com/arquivo/image-search-indexing/blob/51890e0dd5d7d1fd357a2e57d14314780616cf32/src/main/java/pt/arquivo/imagesearch/indexing/processors/DocumentInformationExtractor.java#L51))
+- Create a Map<String (SURT), List<(Document || Inlink)> > output
+- Process the documents that match
+  - Extract text and other metadata creating a doc object 
+  - Append the object to the output[doc.getSurt()].append(doc)
+  - (HTML only) extract the outlinks and “convert” them into inlinks
 
-TODO
+#### DocumentIndexerWithDupsJob.Reduce, TextDocumentData.merge
+For each entry in Map<String (SURT), List<(Document || Inlink)> > 
+- Group all inlinks for this SURT to remove duplicates
+- Group all Documents to do temporal inlink assignment
+- Set<Inlink> inlinks and Set<Document>
+  - For doc in documentSet:
+    - For inlink in inlinkSet, if inlink capture date is within the matching period of doc capture date, add inlink to document
+
+
+
+### Phase 2 - DocumentDupDigestMergerJob
+- For each digest
+  - Merge all `Document` in that digest into a single `Document` (`DocumentInformationMerger`)
+  - Output as JSON
+
 
 ## Image Algorithm 
 ### Phase 1 - ImageIndexerWithDups
