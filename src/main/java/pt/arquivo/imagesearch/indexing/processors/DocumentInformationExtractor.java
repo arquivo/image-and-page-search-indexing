@@ -15,6 +15,7 @@ import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.counters.GenericCounter;
 import org.apache.log4j.Logger;
 import org.apache.tika.config.TikaConfig;
+import org.apache.tika.detect.EncodingDetector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.language.detect.LanguageDetector;
 import org.apache.tika.language.detect.LanguageResult;
@@ -29,12 +30,15 @@ import org.apache.tika.sax.TeeContentHandler;
 import org.archive.io.arc.ARCRecord;
 import org.xml.sax.SAXException;
 
+import pt.arquivo.imagesearch.indexing.utils.HttpBodyDecoder;
 import pt.arquivo.imagesearch.indexing.utils.ImageSearchIndexingUtil;
+import pt.arquivo.imagesearch.indexing.utils.TextEncodingDetector;
 import pt.arquivo.imagesearch.indexing.utils.WARCRecordResponseEncapsulated;
 import pt.arquivo.imagesearch.indexing.utils.MimeTypeCounters.PAGE_INDEXER_COUNTERS_DETECTED;
 import pt.arquivo.imagesearch.indexing.utils.MimeTypeCounters.PAGE_INDEXER_COUNTERS_REPORTED;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -97,6 +101,16 @@ public class DocumentInformationExtractor implements InformationExtractor {
     private HashMap<String, Counter> tmpCounters;
 
     private HashMap<String, Counter> linkTypes;
+
+    /**
+     * Largest text payload buffered in memory; the rest is dropped
+     */
+    private static final int MAX_TEXT_BYTES = 64 * 1024 * 1024;
+
+    /**
+     * When set, records for each document which charset was declared and which was chosen (keyed by content digest)
+     */
+    private HashMap<String, String[]> charsetDecisions = null;
 
     /**
      * Documents already parsed during this session
@@ -271,9 +285,24 @@ public class DocumentInformationExtractor implements InformationExtractor {
 
         } else {
             try {
-                parseTextRecord(record, mimeType, arcName, url, timestamp, offset, statusCode);
+                String contentEncoding = null;
+                String transferEncoding = null;
+                String contentType = null;
+                if (record.getHttpHeaders() != null) {
+                    for (org.apache.commons.httpclient.Header h : record.getHttpHeaders()) {
+                        if (h.getName().equalsIgnoreCase("content-encoding"))
+                            contentEncoding = h.getValue();
+                        else if (h.getName().equalsIgnoreCase("transfer-encoding"))
+                            transferEncoding = h.getValue();
+                        else if (h.getName().equalsIgnoreCase("content-type"))
+                            contentType = h.getValue();
+                    }
+                }
+                parseTextRecord(HttpBodyDecoder.decode(record, transferEncoding, contentEncoding), mimeType, arcName, url, timestamp, offset,
+                        statusCode, HttpBodyDecoder.charsetFromContentType(contentType));
             } catch (IOException e) {
                 logger.error("Error parsing text record: " + record.getHeader().getUrl(), e);
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FAILED_DECODING).increment(1);
             }
         }
 
@@ -343,15 +372,38 @@ public class DocumentInformationExtractor implements InformationExtractor {
             parseRedirectRecord(record.getWARCRecord(), mimeType, arcName, url, timestamp, offset, statusCode, redirectUrl);
         } else {
             try {
-                parseTextRecord(record.getWARCRecord(), mimeType, arcName, url, timestamp, offset, statusCode);
+                InputStream decoded = record.getDecodedInputStream();
+                parseTextRecord(decoded, mimeType, arcName, url, timestamp, offset, statusCode,
+                        record.getContentTypeCharset());
             } catch (IOException e) {
-                // TODO Auto-generated catch block
                 logger.error("Error parsing text record: " + url, e);
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FAILED_DECODING).increment(1);
             }
         }
     }
+
     public TextDocumentData parseTextRecord(InputStream record, String mimeType, String arcName, String url,
             String timestamp, long offset, int statusCode) throws IOException {
+        return parseTextRecord(record, mimeType, arcName, url, timestamp, offset, statusCode, null);
+    }
+
+    /** Types read by Tika's XML parser, which does its own decoding. */
+    private static boolean isXml(String mimeType) {
+        return mimeType != null && mimeType.contains("xml") && !mimeType.contains("html");
+    }
+
+    private static boolean isTextLike(String mimeType) {
+        return mimeType != null && (mimeType.startsWith("text/") || mimeType.contains("xml") || mimeType.contains("html"));
+    }
+
+    /**
+     * Parse a text record
+     *
+     * @param record          payload with Content-Encoding already removed
+     * @param declaredCharset charset declared in the HTTP Content-Type header, or null
+     */
+    public TextDocumentData parseTextRecord(InputStream record, String mimeType, String arcName, String url,
+            String timestamp, long offset, int statusCode, String declaredCharset) throws IOException {
         getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_READ).increment(1);
         getCounter(mimeToCounterReported(mimeType)).increment(1);
 
@@ -392,15 +444,67 @@ public class DocumentInformationExtractor implements InformationExtractor {
             return null;
         }
 
-        DigestInputStream stream = new DigestInputStream(record, md5Stream);
-
+        InputStream stream;
+        boolean sourceHasReplacementChar = false;
+        String repairReason = null;
+        String xmlReason = null;
+        boolean decodedAsText = isTextLike(mimeType);
         try {
-            if (stream.available() == 0){
-                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_EMPTY).increment(1);
-                return textDocumentData;
+            if (decodedAsText) {
+                // Text is buffered so the encoding detector can look at all of it
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                byte[] chunk = new byte[16384];
+                int n;
+                while (buffer.size() < MAX_TEXT_BYTES && (n = record.read(chunk)) > 0)
+                    buffer.write(chunk, 0, n);
+                byte[] bytes = buffer.toByteArray();
+                if (bytes.length == 0) {
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_EMPTY).increment(1);
+                    return textDocumentData;
+                }
+                md5Stream.update(bytes);
+                if (charsetDecisions != null)
+                    sourceHasReplacementChar = TextEncodingDetector.containsReplacementChar(bytes);
+                byte[] repaired = TextEncodingDetector.repairStrayBytes(bytes, declaredCharset);
+                if (repaired != null) {
+                    repairReason = "UTF8_REPAIRED";
+                } else {
+                    repaired = TextEncodingDetector.repairEmbeddedUtf8(bytes, declaredCharset);
+                    if (repaired != null)
+                        repairReason = "LATIN_REPAIRED";
+                }
+                if (repaired != null)
+                    bytes = repaired;
+                byte[] c1 = TextEncodingDetector.repairC1InUtf8(bytes, declaredCharset);
+                if (c1 != null) {
+                    bytes = c1;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_C1_CONTROLS_REMAPPED).increment(1);
+                }
+                byte[] stripped = TextEncodingDetector.stripControlBytes(bytes);
+                if (stripped != null) {
+                    bytes = stripped;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_CONTROL_CHARS_STRIPPED).increment(1);
+                }
+                if (isXml(mimeType)) {
+                    TextEncodingDetector.XmlResult xml = TextEncodingDetector.xmlToUtf8(bytes, declaredCharset);
+                    bytes = xml.bytes;
+                    xmlReason = xml.resolution.reason.name();
+                }
+                stream = new ByteArrayInputStream(bytes);
+            } else {
+                BufferedInputStream buffered = new BufferedInputStream(record);
+                buffered.mark(1);
+                if (buffered.read() < 0) {
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_EMPTY).increment(1);
+                    return textDocumentData;
+                }
+                buffered.reset();
+                stream = new DigestInputStream(buffered, md5Stream);
             }
         } catch (IOException e) {
-            logger.error("Error parsing record: " + url, e);
+            logger.error("Error reading record: " + url, e);
+            getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FAILED_DECODING).increment(1);
+            return textDocumentData;
         }
 
          Parser parser = null;
@@ -411,17 +515,36 @@ public class DocumentInformationExtractor implements InformationExtractor {
          }
 
         Metadata metadata = new Metadata();
+        if (declaredCharset != null)
+            metadata.set(TextEncodingDetector.DECLARED_CHARSET, declaredCharset);
+        // Tika's magic detection calls text in legacy 8-bit charsets application/octet-stream; the hint only applies
+        // when it finds nothing more specific
+        if (isTextLike(mimeType) && !mimeType.equals("text/html"))
+            metadata.set(Metadata.CONTENT_TYPE, mimeType);
         BodyContentHandler bodyHandler = new BodyContentHandler(CONTENT_CHAR_LIMIT);
 
         // Add anchor text to the content
         LinkContentHandler linkHandler = new LinkContentHandler();
         TeeContentHandler handler = new TeeContentHandler(bodyHandler, linkHandler);
         ParseContext context = new ParseContext();
+        context.set(EncodingDetector.class, new TextEncodingDetector());
 
         try {
             parser.parse(stream, handler, metadata, context);
 
-            // String detectedEncoding = metadata.get("Content-Encoding");
+            if (repairReason != null)
+                metadata.set(TextEncodingDetector.RESOLUTION_REASON, repairReason);
+            else if (xmlReason != null)
+                metadata.set(TextEncodingDetector.RESOLUTION_REASON, xmlReason);
+            String charsetReason = metadata.get(TextEncodingDetector.RESOLUTION_REASON);
+            if (charsetReason != null)
+                getCounter(DOCUMENT_COUNTERS.valueOf("CHARSET_" + charsetReason)).increment(1);
+            if (charsetReason != null && (!charsetReason.startsWith("UTF8") || repairReason != null) && !charsetReason.equals("ASCII")
+                    && !charsetReason.equals("BOM") && !charsetReason.equals("DECLARED_HTTP"))
+                logger.info("Charset " + charsetReason + " -> " + metadata.get(TextEncodingDetector.RESOLVED_CHARSET)
+                        + " (declared " + declaredCharset + ") " + timestamp + " " + url + " " + arcName + "@" + offset);
+            if (TextEncodingDetector.Reason.BINARY.name().equals(charsetReason))
+                return textDocumentData;
             String detectedMimeType = metadata.get("Content-Type").split(";")[0].trim();
 
             textDocumentData.setMimeTypeDetected(detectedMimeType);
@@ -450,6 +573,13 @@ public class DocumentInformationExtractor implements InformationExtractor {
         try {
 
             String body = bodyHandler.toString();
+            // PDFBox and POI emit the glyph code of characters without a Unicode mapping as a control character, and
+            // Tika turns it into U+FFFD. The letter is lost either way; a space keeps words from being glued together
+            String contentType = metadata.get("Content-Type");
+            if (body.indexOf('\uFFFD') >= 0 && contentType != null && !isTextLike(contentType.split(";")[0].trim())) {
+                body = body.replaceAll("\uFFFD+", " ");
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_UNMAPPED_GLYPHS_REPLACED).increment(1);
+            }
             body = removeJunkCharacters(body);
 
             if (body.isEmpty()) {
@@ -510,18 +640,22 @@ public class DocumentInformationExtractor implements InformationExtractor {
             });
 
 
-            md5Text.update((body+"\t").getBytes());
-            md5Text.update((metadataString+"\t").getBytes());
-            md5Text.update((title+"\t").getBytes());
+            md5Text.update((body+"\t").getBytes(StandardCharsets.UTF_8));
+            md5Text.update((metadataString+"\t").getBytes(StandardCharsets.UTF_8));
+            md5Text.update((title+"\t").getBytes(StandardCharsets.UTF_8));
 
             HexBinaryAdapter hexBinaryAdapter = new HexBinaryAdapter();
             String digest = hexBinaryAdapter.marshal(md5Text.digest());
 
-            String warcDigest = hexBinaryAdapter.marshal(stream.getMessageDigest().digest());
+            String warcDigest = hexBinaryAdapter.marshal(md5Stream.digest());
             textDocumentData.setDigestContent(digest);
             textDocumentData.setDigestContainer(warcDigest);
 
             textDocumentData.addContent(body);
+
+            if (charsetDecisions != null)
+                charsetDecisions.put(digest, new String[] { declaredCharset, metadata.get(TextEncodingDetector.RESOLVED_CHARSET),
+                        metadata.get(TextEncodingDetector.RESOLUTION_REASON), String.valueOf(sourceHasReplacementChar) });
 
             insertDocumentIndex(textDocumentData);
             getCounter(DOCUMENT_COUNTERS.RECORDS_SUCCESS).increment(1);
@@ -624,6 +758,20 @@ public class DocumentInformationExtractor implements InformationExtractor {
         }
         return mimeType;
 
+    }
+
+    /**
+     * Starts recording the declared and chosen charset of every parsed document (for local analysis)
+     */
+    public void trackCharsetDecisions() {
+        charsetDecisions = new HashMap<>();
+    }
+
+    /**
+     * Content digest -> {declared charset, chosen charset, reason, "true" if the source bytes already contained U+FFFD}; null unless tracking was enabled
+     */
+    public HashMap<String, String[]> getCharsetDecisions() {
+        return charsetDecisions;
     }
 
     public HashMap<String, TextDocumentData> getEntries() {

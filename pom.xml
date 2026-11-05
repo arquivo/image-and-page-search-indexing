@@ -18,11 +18,30 @@
         <maven.compiler.target>1.8</maven.compiler.target>
     </properties>
 
+    <profiles>
+        <!-- source/target alone still compile against the running JDK's API (e.g. CharBuffer.clear() returning CharBuffer
+             since Java 9), which fails with NoSuchMethodError on the Java 8 cluster. javac 8 does not know the release option. -->
+        <profile>
+            <id>release-8-on-newer-jdk</id>
+            <activation>
+                <jdk>[9,)</jdk>
+            </activation>
+            <properties>
+                <maven.compiler.release>8</maven.compiler.release>
+            </properties>
+        </profile>
+    </profiles>
+
     <build>
 
         <plugins>
             <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+            </plugin>
+            <plugin>
                 <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.7.1</version>
                 <executions>
                     <execution>
                         <phase>package</phase>
@@ -32,12 +51,38 @@
                     </execution>
                 </executions>
                 <configuration>
-                    <descriptorRefs>
-                        <descriptorRef>jar-with-dependencies</descriptorRef>
-                    </descriptorRefs>
+                    <descriptors>
+                        <descriptor>src/assembly/fat-jar.xml</descriptor>
+                    </descriptors>
                     <finalName>${project.artifactId}</finalName>
                     <appendAssemblyId>false</appendAssemblyId>
                 </configuration>
+            </plugin>
+            <!-- Runs the tests again after packaging, with only the fat jar (no loose dependency jars) on the classpath,
+                 so packaging bugs such as unmerged META-INF/services files are caught. Part of `mvn verify`. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>fat-jar-tests</id>
+                        <phase>integration-test</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${skipTests}</skip>
+                            <executable>bash</executable>
+                            <arguments>
+                                <argument>${project.basedir}/scripts/test-fatjar.sh</argument>
+                            </arguments>
+                            <environmentVariables>
+                                <M2_REPO>${settings.localRepository}</M2_REPO>
+                            </environmentVariables>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <!-- Force download dependencies javadocs and sources when generating eclipse's classpath -->
             <plugin>

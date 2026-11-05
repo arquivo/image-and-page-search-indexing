@@ -143,9 +143,18 @@ public class WARCRecordResponseEncapsulated {
     public boolean isWARCResponseRecord() {
         String warcRecordMimetype = warcrecord.getHeader().getMimetype();
         String warcRecordType = (String) warcrecord.getHeader().getHeaderValue(WARCConstants.HEADER_KEY_TYPE);
-        return warcRecordType != null && warcRecordMimetype != null && WARCConstants.WARCRecordType.response.toString().equals(warcRecordType.trim()) &&
-                (warcRecordMimetype.trim().equals(WARCConstants.HTTP_RESPONSE_MIMETYPE) ||
-                        warcRecordMimetype.trim().equals(WARCConstants.HTTP_RESPONSE_MIMETYPE.replaceAll("\\s", "")));
+        if (warcRecordType == null || warcRecordMimetype == null
+                || !WARCConstants.WARCRecordType.response.toString().equals(warcRecordType.trim())) {
+            return false;
+        }
+        String mime = warcRecordMimetype.trim();
+        if (mime.equals(WARCConstants.HTTP_RESPONSE_MIMETYPE)
+                || mime.equals(WARCConstants.HTTP_RESPONSE_MIMETYPE.replaceAll("\\s", ""))) {
+            return true;
+        }
+        // Some writers (WARC/1.1) put the payload mimetype in the WARC Content-Type of http(s) response records
+        String targetUri = (String) warcrecord.getHeader().getHeaderValue(WARCConstants.HEADER_KEY_URI);
+        return targetUri != null && targetUri.trim().toLowerCase().startsWith("http");
     }
 
 
@@ -220,6 +229,23 @@ public class WARCRecordResponseEncapsulated {
         }
     }
 
+
+
+    /**
+     * Charset declared in the HTTP Content-Type header, or null when absent.
+     */
+    public String getContentTypeCharset() {
+        return HttpBodyDecoder.charsetFromContentType(headerFields == null ? null : (String) headerFields.get("content-type"));
+    }
+
+    /**
+     * Get the HTTP payload with Transfer-Encoding (chunked) and Content-Encoding (gzip, deflate, br, or a list of them) removed.
+     * Unlike {@link #getInputStream()}, which only handles Brotli (the image pipeline relies on that behaviour).
+     */
+    public InputStream getDecodedInputStream() throws IOException {
+        return HttpBodyDecoder.decode(warcrecord, (String) headerFields.get("transfer-encoding"),
+                (String) headerFields.get(CONTENT_ENCODING));
+    }
 
     /**
      * Get the WARCRecord content bytes

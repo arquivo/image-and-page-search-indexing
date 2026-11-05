@@ -174,6 +174,7 @@ public class ImageSearchIndexingUtil {
                 try {
                     warcRecord = (WARCRecord) ii.next();
                     WARCRecordResponseEncapsulated record = parseWarcRecord(warcRecord, context);
+                    records++;
                     if (record != null)
                         consumer.accept(record);
                 } catch (RuntimeException re) {
