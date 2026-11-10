@@ -21,7 +21,6 @@ public final class HttpBodyDecoder {
     private static final Pattern CHARSET_PARAM = Pattern.compile("charset\\s*=\\s*[\"']?([^\\s;\"',]+)", Pattern.CASE_INSENSITIVE);
 
     private static final int CHUNK_SNIFF_BYTES = 32;
-    private static final int GZIP_SNIFF_BYTES = 16;
 
     private HttpBodyDecoder() {
     }
@@ -52,37 +51,15 @@ public final class HttpBodyDecoder {
 
     /**
      * Undoes Content-Encoding (gzip, deflate, br, or a comma separated list of them).
-     * Truncated compressed payloads yield the bytes decoded so far instead of an exception.
+     * Truncated compressed payloads yield the bytes decoded so far instead of an exception. Gzip data that the headers do
+     * not announce is left alone: a browser would not decode it either, and such files are downloads, not pages.
      *
      * @param raw              payload as stored in the (W)ARC
      * @param transferEncoding Transfer-Encoding header value, may be null
      * @param contentEncoding  Content-Encoding header value, may be null
      */
     public static InputStream decode(InputStream raw, String transferEncoding, String contentEncoding) throws IOException {
-        return unwrapUndeclaredGzip(decodeDeclared(raw, transferEncoding, contentEncoding));
-    }
-
-    /**
-     * Gzip data that the headers do not announce, possibly after stray whitespace (a server that prints a newline
-     * before its compressed output). Browsers show such pages as garbage too, but the content is recoverable and
-     * the bytes are never legitimate text.
-     */
-    private static InputStream unwrapUndeclaredGzip(InputStream in) throws IOException {
-        InputStream stream = new BufferedInputStream(in);
-        stream.mark(GZIP_SNIFF_BYTES + 8);
-        int lead = 0;
-        int c = stream.read();
-        while (lead < GZIP_SNIFF_BYTES && (c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
-            lead++;
-            c = stream.read();
-        }
-        boolean gzip = c == 0x1f && stream.read() == 0x8b && stream.read() == 0x08;
-        stream.reset();
-        if (!gzip)
-            return stream;
-        for (int i = 0; i < lead; i++)
-            stream.read();
-        return new TruncationTolerantInputStream(new GZIPInputStream(stream));
+        return decodeDeclared(raw, transferEncoding, contentEncoding);
     }
 
     private static InputStream decodeDeclared(InputStream raw, String transferEncoding, String contentEncoding) throws IOException {

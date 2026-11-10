@@ -34,7 +34,10 @@ for ((b = 0; b < N; b++)); do
   batch=()
   for f in "${FILES[@]:$((b * BATCH_SIZE)):$BATCH_SIZE}"; do batch+=("/data/$(basename "$f")"); done
   echo "$(date +%T) $name/$N: ${#batch[@]} WARCs (${batch[0]} ...)"
-  docker compose run --rm -e SKIP_BUILD=1 -e JAVA_OPTS="$JAVA_OPTS_BATCH" -e OUT="/${OUTDIR}/$name.jsonl" \
+  # CHARSET_DATASET=1 also writes out/.../batch-NN.charsets.tsv; COLLECTION names the collection (default Local)
+  dataset_env=()
+  if [ -n "${CHARSET_DATASET:-}" ]; then dataset_env=(-e CHARSET_DATASET="/${OUTDIR}/$name.charsets.tsv" -e CHARSET_DATASET_AGREE_PERCENT="${CHARSET_DATASET_AGREE_PERCENT:-1}"); fi
+  docker compose run --rm -e SKIP_BUILD=1 -e JAVA_OPTS="$JAVA_OPTS_BATCH" -e OUT="/${OUTDIR}/$name.jsonl" -e COLLECTION="${COLLECTION:-Local}" "${dataset_env[@]}" \
     indexer scripts/local-text-dump.sh "${batch[@]}" > "$OUTDIR/$name.log" 2>&1 || echo "$name FAILED, see $OUTDIR/$name.log"
 done
 

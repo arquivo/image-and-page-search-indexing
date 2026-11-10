@@ -24,5 +24,6 @@ for f in "$@"; do
 done
 
 [ -n "${SKIP_BUILD:-}" ] || mvn -q package -DskipTests
-java ${JAVA_OPTS:-} -cp target/image-search-indexing.jar pt.arquivo.imagesearch.indexing.LocalDocumentIndexer "$LIST" "$COLLECTION" "$OUT"
+# CHARSET_DATASET=<file> also writes the reported-vs-detected charset dataset (CHARSET_DATASET_AGREE_PERCENT of the agreeing pages, default 1)
+java ${JAVA_OPTS:-} -cp target/image-search-indexing.jar pt.arquivo.imagesearch.indexing.LocalDocumentIndexer "$LIST" "$COLLECTION" "$OUT" "${CHARSET_DATASET:-}" "${CHARSET_DATASET_AGREE_PERCENT:-1}"
 rm -f "$LIST"

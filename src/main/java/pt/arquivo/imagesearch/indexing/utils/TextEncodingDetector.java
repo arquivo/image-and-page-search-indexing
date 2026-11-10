@@ -67,6 +67,12 @@ public class TextEncodingDetector implements EncodingDetector {
     /** Largest share of non-ASCII bytes that may fail to decode for a declared charset to still be trusted. */
     private static final double LENIENT_MAX_BAD_RATIO = 0.02;
     private static final double BINARY_CONTROL_RATIO = 0.02;
+    private static final int MIN_CJK_HIGH_BYTES = 16;
+    private static final double MIN_CJK_AVG_RUN = 2.2;
+    /** Portuguese "ção/ções" gives runs of exactly two high bytes, so a plain average of 2.0 proves nothing. */
+    private static final double MIN_CJK_AVG_RUN_SHIFT_JIS = 2.0;
+    /** Latin text with a few accents (Portuguese menus, German umlauts) has about 0.1% high bytes; CJK text far more. */
+    private static final double MIN_CJK_HIGH_FRACTION = 0.003;
     private static final Charset WINDOWS_1252 = Charset.forName("windows-1252");
 
     @Override
@@ -121,8 +127,24 @@ public class TextEncodingDetector implements EncodingDetector {
 
         // Fonts, images and the like served as text. Checked before the declarations, which would happily "decode" them
         // (NULs alone are no sign of binary: UTF-16 without BOM is full of them)
-        if (controlRatio(sample, !looksWide) > BINARY_CONTROL_RATIO)
+        if (controlRatio(sample) > BINARY_CONTROL_RATIO)
             return new Resolution(WINDOWS_1252, Reason.BINARY);
+
+        // A Latin declaration always "decodes cleanly", so it must not outvote bytes that are plainly Shift_JIS/EUC/GBK/Big5
+        if (isLatinDeclaration(http) && !looksWide) {
+            Charset cjk = hasIso2022JpEscape(sample) && decodesCleanly(Charset.forName("ISO-2022-JP"), data)
+                    ? Charset.forName("ISO-2022-JP") : cjkMisdeclaredAsLatin(sample, data);
+            if (cjk != null)
+                return new Resolution(cjk, Reason.STATISTICAL);
+        }
+
+        // Bytes windows-1252 leaves undefined cannot be Latin text: old Mac / DOS code pages are the usual cause
+        if (!looksWide && (http == null || isLatinDeclaration(http)) && (meta == null || isLatinDeclaration(meta))
+                && multibyte == 0 && hasCp1252UndefinedByte(data)) {
+            Charset legacy = legacyCodePage(sample);
+            if (legacy != null)
+                return new Resolution(legacy, Reason.STATISTICAL);
+        }
 
         Charset strictHttp = accept(http, looksWide, data);
         if (strictHttp != null)
@@ -171,6 +193,210 @@ public class TextEncodingDetector implements EncodingDetector {
 
         Charset fallback = decodesCleanly(WINDOWS_1252, data) ? WINDOWS_1252 : StandardCharsets.ISO_8859_1;
         return new Resolution(fallback, Reason.FALLBACK);
+    }
+
+    private static final Charset[] LEGACY_CODE_PAGES = {Charset.forName("x-MacRoman"), Charset.forName("IBM850"), Charset.forName("IBM860")};
+    private static final int LEGACY_MIN_HIGH_BYTES = 6;
+    /** Text has next to no NULs; an Office document served as text has a third of its bytes NUL and must not be edited. */
+    private static final double MAX_NUL_RATIO_FOR_TEXT_REPAIR = 0.01;
+    private static final double LEGACY_MIN_SCORE = 0.85;
+    private static final double LEGACY_MIN_MARGIN = 0.3;
+    private static final String TYPOGRAPHIC = "\u2018\u2019\u201C\u201D\u2013\u2014\u2026\u2022\u00AB\u00BB\u00BF\u00A1\u20AC\u00A0";
+
+    private static boolean isCp1252Undefined(int v) {
+        return v == 0x81 || v == 0x8D || v == 0x8F || v == 0x90 || v == 0x9D;
+    }
+
+    private static boolean hasCp1252UndefinedByte(byte[] data) {
+        for (byte b : data)
+            if (isCp1252Undefined(b & 0xFF))
+                return true;
+        return false;
+    }
+
+    /**
+     * Mac Roman or DOS CP850 when it reads clearly better than windows-1252, else null. Only for data with no valid
+     * UTF-8 sequence (a Latin page that pasted some UTF-8 is not a legacy page). Each candidate is scored by the share
+     * of its accented characters and symbols that are plausible in text (see {@link #plausibility}); windows-1252
+     * must read poorly and the legacy page well, so Latin text that merely has a stray undefined byte keeps
+     * windows-1252.
+     */
+    private static Charset legacyCodePage(byte[] sample) {
+        int high = 0;
+        for (byte b : sample)
+            if ((b & 0x80) != 0)
+                high++;
+        if (high < LEGACY_MIN_HIGH_BYTES)
+            return null;
+        double base = plausibility(new String(sample, WINDOWS_1252));
+        Charset best = null;
+        double bestScore = 0, second = 0;
+        for (Charset c : LEGACY_CODE_PAGES) {
+            double s = plausibility(new String(sample, c));
+            if (s > bestScore) {
+                second = bestScore;
+                best = c;
+                bestScore = s;
+            } else if (s > second) {
+                second = s;
+            }
+        }
+        return best != null && bestScore >= LEGACY_MIN_SCORE && bestScore - base >= LEGACY_MIN_MARGIN
+                && bestScore - second >= 0.05 && lowercaseShare(new String(sample, best)) >= 0.5 ? best : null;
+    }
+
+    /** Share of the non-ASCII letters that are lowercase or the sentence-initial É/À; prose has mostly those, noise has other capitals. */
+    private static double lowercaseShare(String text) {
+        int letters = 0, lower = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch < 0x80 || !Character.isLetter(ch))
+                continue;
+            letters++;
+            if (Character.isLowerCase(ch) || ch == '\u00C9' || ch == '\u00C0')
+                lower++;
+        }
+        return letters == 0 ? 0 : (double) lower / letters;
+    }
+
+    /**
+     * Share (0 to 1) of the non-ASCII characters that are plausible: lowercase letters next to a letter, a capital
+     * opening a word or inside an all-caps word, a lone é/à/ó/ô/É/À, ordinal indicators after a digit and typographic
+     * punctuation. Implausible: capitals after a lowercase letter, lowercase letters before a capital, isolated letters,
+     * other symbols and U+FFFD.
+     */
+    public static double plausibility(String text) {
+        int total = 0;
+        double good = 0;
+        int n = text.length();
+        for (int i = 0; i < n; i++) {
+            char ch = text.charAt(i);
+            if (ch < 0x80)
+                continue;
+            total++;
+            char prev = i > 0 ? text.charAt(i - 1) : ' ';
+            char next = i + 1 < n ? text.charAt(i + 1) : ' ';
+            good += plausible(ch, prev, next);
+        }
+        return total == 0 ? 0 : good / total;
+    }
+
+    /** Letters that appear in Portuguese, Spanish, French, German and Dutch text far less than the common accents (ã é ç ó ...). */
+    private static final String UNCOMMON_LETTERS = "\u00EC\u00EF\u00F2\u00F9\u00FB\u00EE\u00FF\u00F0\u00FE\u00F8\u00E6\u0153";
+
+    private static double plausible(char ch, char prev, char next) {
+        if (!Character.isLetter(ch))
+            return TYPOGRAPHIC.indexOf(ch) >= 0 ? 1 : 0;
+        Character.UnicodeBlock block = Character.UnicodeBlock.of(ch);
+        if (block != Character.UnicodeBlock.LATIN_1_SUPPLEMENT && block != Character.UnicodeBlock.LATIN_EXTENDED_A
+                && block != Character.UnicodeBlock.LATIN_EXTENDED_B)
+            return 0;
+        boolean pl = Character.isLetter(prev), nl = Character.isLetter(next);
+        if (Character.isLowerCase(ch)) {
+            boolean fits;
+            if (pl)
+                fits = !(nl && Character.isUpperCase(next) && Character.isLowerCase(prev));
+            else if (nl)
+                fits = Character.isLowerCase(next);
+            else
+                fits = "\u00E9\u00E0\u00F3\u00F4".indexOf(ch) >= 0;
+            return !fits ? 0 : UNCOMMON_LETTERS.indexOf(ch) >= 0 ? 0.5 : 1;
+        }
+        if (Character.isUpperCase(ch)) {
+            if (pl && Character.isLowerCase(prev))
+                return 0;
+            if (pl)
+                return !nl || Character.isUpperCase(next) ? 1 : 0;
+            if (nl)
+                return 1;
+            return "\u00C9\u00C0".indexOf(ch) >= 0 ? 1 : 0;
+        }
+        return Character.isDigit(prev) ? 1 : 0;
+    }
+
+    /**
+     * Drops the bytes windows-1252 leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) from data that is going to be read
+     * as windows-1252 or ISO-8859-1. They are junk in such a page (a browser shows nothing for them), and left in they
+     * make the whole page fall back to ISO-8859-1, where the curly quotes and dashes of 0x80-0x9F become control
+     * characters, or come out as U+FFFD.
+     *
+     * @return the bytes without them, or null if there is nothing to drop or the page is not read as a Latin charset
+     */
+    public static byte[] dropUndefinedLatinBytes(byte[] data, String declaredHttp) {
+        if (!hasCp1252UndefinedByte(data) || nulRatio(data) > MAX_NUL_RATIO_FOR_TEXT_REPAIR)
+            return null;
+        Charset c = resolve(data, declaredHttp).charset;
+        if (!c.equals(WINDOWS_1252) && !c.equals(StandardCharsets.ISO_8859_1))
+            return null;
+        ByteArrayOutputStream out = new ByteArrayOutputStream(data.length);
+        for (byte b : data)
+            if (!isCp1252Undefined(b & 0xFF))
+                out.write(b);
+        return out.toByteArray();
+    }
+
+    private static boolean isLatinDeclaration(Charset c) {
+        return c != null && (c.equals(WINDOWS_1252) || c.equals(StandardCharsets.ISO_8859_1) || c.name().equals("ISO-8859-15"));
+    }
+
+    /**
+     * Text in a multi-byte CJK charset served with a Latin-1 declaration (typically a server default). Real Latin text
+     * has isolated accented letters; CJK text has long runs of high bytes. Both the run length and a statistical
+     * detector that names a multi-byte charset able to decode every byte must agree.
+     */
+    private static Charset cjkMisdeclaredAsLatin(byte[] sample, byte[] data) {
+        int high = 0, runs = 0, c1 = 0;
+        boolean inRun = false;
+        for (byte x : sample) {
+            if (x < 0) {
+                high++;
+                if ((x & 0xff) < 0xA0)
+                    c1++;
+                if (!inRun) {
+                    runs++;
+                    inRun = true;
+                }
+            } else {
+                inRun = false;
+            }
+        }
+        if (high < MIN_CJK_HIGH_BYTES || high < sample.length * MIN_CJK_HIGH_FRACTION)
+            return null;
+        // C1 bytes (0x80-0x9F) as most of the high bytes are Shift_JIS lead bytes, which Latin text does not have
+        double minAvgRun = c1 * 2 >= high ? MIN_CJK_AVG_RUN_SHIFT_JIS : MIN_CJK_AVG_RUN;
+        if (high < runs * minAvgRun)
+            return null;
+        try {
+            CharsetDetector icu = new CharsetDetector();
+            icu.enableInputFilter(true);
+            icu.setText(sample);
+            CharsetMatch[] matches = icu.detectAll();
+            if (matches != null) {
+                for (CharsetMatch m : matches) {
+                    if (m.getConfidence() < MIN_ICU_CONFIDENCE)
+                        break;
+                    Charset c = multiByteCjk(normalize(m.getName()), data);
+                    if (c != null)
+                        return c;
+                }
+            }
+        } catch (RuntimeException e) {
+            // ICU failing on odd input must not abort the document
+        }
+        try {
+            UniversalDetector uni = new UniversalDetector(null);
+            uni.handleData(sample, 0, sample.length);
+            uni.dataEnd();
+            return multiByteCjk(normalize(uni.getDetectedCharset()), data);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static Charset multiByteCjk(Charset c, byte[] data) {
+        if (c == null || c.name().startsWith("UTF") || c.newEncoder().maxBytesPerChar() < 2)
+            return null;
+        return decodesCleanly(c, data) ? c : null;
     }
 
     /**
@@ -229,27 +455,67 @@ public class TextEncodingDetector implements EncodingDetector {
         return true;
     }
 
-    private static double controlRatio(byte[] b, boolean countNul) {
+    /**
+     * Share of bytes that are control characters, the sign of binary data. NULs are not counted (text with stray NULs,
+     * and UTF-16, are full of them; binary data is told apart by its other control bytes), nor are the ESC bytes of
+     * ISO-2022 escape sequences, which 7-bit Japanese pages have every few characters.
+     */
+    private static double controlRatio(byte[] b) {
         if (b.length == 0)
             return 0;
         int control = 0;
-        for (byte x : b) {
-            int c = x & 0xff;
-            if (c == 0 && !countNul)
+        for (int i = 0; i < b.length; i++) {
+            int c = b[i] & 0xff;
+            if (c == 0x1B && isIso2022Escape(b, i))
                 continue;
-            if (c < 0x20 && c != '\t' && c != '\n' && c != '\r' && c != '\f')
+            if (c != 0 && c < 0x20 && c != '\t' && c != '\n' && c != '\r' && c != '\f')
                 control++;
         }
         return control / (double) b.length;
     }
 
-    /** True if the bytes contain U+FFFD already, either encoded or as a numeric character reference. */
-    public static boolean containsReplacementChar(byte[] b) {
+    /** ESC followed by a G0/G1 designation: ESC $ B, ESC $ @, ESC $ A, ESC $ ( D, ESC $ ) C, ESC ( B, ESC ( J, ESC ( I. */
+    private static boolean isIso2022Escape(byte[] b, int i) {
+        if (i + 2 >= b.length)
+            return false;
+        int x = b[i + 1], y = b[i + 2];
+        if (x == '$')
+            return y == 'B' || y == '@' || y == 'A' || y == '(' || y == ')';
+        return x == '(' && (y == 'B' || y == 'J' || y == 'I');
+    }
+
+    private static boolean hasIso2022JpEscape(byte[] b) {
         for (int i = 0; i + 2 < b.length; i++)
-            if ((b[i] & 0xff) == 0xEF && (b[i + 1] & 0xff) == 0xBF && (b[i + 2] & 0xff) == 0xBD)
+            if (b[i] == 0x1B && b[i + 1] == '$' && (b[i + 2] == 'B' || b[i + 2] == '@' || b[i + 2] == '('))
                 return true;
-        String latin = new String(b, StandardCharsets.ISO_8859_1).toLowerCase(Locale.ROOT);
-        return latin.contains("&#65533;") || latin.contains("&#xfffd;");
+        return false;
+    }
+
+    /** True if the bytes contain U+FFFD already, either encoded or as a numeric character reference (&amp;#65533; / &amp;#xFFFD;). */
+    public static boolean containsReplacementChar(byte[] b) {
+        for (int i = 0; i + 2 < b.length; i++) {
+            int c = b[i] & 0xff;
+            if (c == 0xEF && (b[i + 1] & 0xff) == 0xBF && (b[i + 2] & 0xff) == 0xBD)
+                return true;
+            if (c == '&' && b[i + 1] == '#' && isReplacementReference(b, i + 2))
+                return true;
+        }
+        return false;
+    }
+
+    private static boolean isReplacementReference(byte[] b, int p) {
+        if (p < b.length && (b[p] == 'x' || b[p] == 'X'))
+            return matchesIgnoreCase(b, p + 1, "fffd") && !(p + 5 < b.length && Character.digit(b[p + 5], 16) >= 0);
+        return matchesIgnoreCase(b, p, "65533") && !(p + 5 < b.length && b[p + 5] >= '0' && b[p + 5] <= '9');
+    }
+
+    private static boolean matchesIgnoreCase(byte[] b, int p, String s) {
+        if (p + s.length() > b.length)
+            return false;
+        for (int i = 0; i < s.length(); i++)
+            if (Character.toLowerCase((char) (b[p + i] & 0xff)) != s.charAt(i))
+                return false;
+        return true;
     }
 
     private static double nulRatio(byte[] b) {
@@ -326,6 +592,18 @@ public class TextEncodingDetector implements EncodingDetector {
     }
 
     /**
+     * A UTF-8 BOM in front of a body that has high bytes but not a single valid UTF-8 sequence (a Latin-1 file saved by
+     * an editor that adds the BOM): returns the data without the BOM so the other rules decide. Otherwise null.
+     */
+    public static byte[] dropFalseUtf8Bom(byte[] data) {
+        if (bomCharset(data) != StandardCharsets.UTF_8)
+            return null;
+        byte[] rest = Arrays.copyOfRange(data, 3, data.length);
+        int[] scan = scanUtf8(rest);
+        return scan[0] == 0 && scan[1] > 0 ? rest : null;
+    }
+
+    /**
      * For a page that resolves to UTF-8 but contains stray single bytes (Latin-1/windows-1252 text pasted into a
      * UTF-8 page, e.g. "Portugu\u00eas" with a lone 0xEA), returns a copy where each stray byte is replaced by the UTF-8
      * encoding of its windows-1252 character, so the text survives instead of becoming U+FFFD. A lone first half of a
@@ -338,6 +616,8 @@ public class TextEncodingDetector implements EncodingDetector {
         if (scan[0] == 0 || scan[1] == 0)
             return null;
         Resolution r = resolve(data, declaredHttp);
+        if (r.reason == Reason.BOM && r.charset == StandardCharsets.UTF_8)
+            r = resolve(Arrays.copyOfRange(data, 3, data.length), declaredHttp); // a BOM does not make the body clean
         if (r.reason != Reason.UTF8_MOSTLY)
             return null;
         ByteArrayOutputStream out = new ByteArrayOutputStream(data.length + scan[1] * 2);
@@ -356,8 +636,8 @@ public class TextEncodingDetector implements EncodingDetector {
             } else if (seq < 0) {
                 out.write(data, i, data.length - i); // cut off by the end of the data
                 break;
-            } else if (looksCutOff(data, i)) {
-                i++; // dangling first half of a cut-off character: drop it
+            } else if (cutOffLength(data, i) > 0) {
+                i += cutOffLength(data, i); // dangling first part of a cut-off character: drop it
             } else {
                 byte[] repl = new String(new byte[] { (byte) c }, c == 0x81 || c == 0x8d || c == 0x8f || c == 0x90 || c == 0x9d
                         ? StandardCharsets.ISO_8859_1 : WINDOWS_1252).getBytes(StandardCharsets.UTF_8);
@@ -472,11 +752,11 @@ public class TextEncodingDetector implements EncodingDetector {
      */
     public static byte[] stripControlBytes(byte[] data) {
         int control = 0;
-        for (byte x : data) {
-            int c = x & 0xff;
-            if (c == 0x1B)
+        for (int i = 0; i < data.length; i++) {
+            int c = data[i] & 0xff;
+            if (c == 0x1B && isIso2022Escape(data, i))
                 return null;
-            if (c < 0x20 && c != '\t' && c != '\n' && c != '\r')
+            if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7F)
                 control++;
         }
         if (control == 0)
@@ -487,15 +767,70 @@ public class TextEncodingDetector implements EncodingDetector {
         if (nulRatio(data) > 0.2)
             return null;
         byte[] sample = data.length > STATISTICAL_SAMPLE ? Arrays.copyOf(data, STATISTICAL_SAMPLE) : data;
-        if (controlRatio(sample, true) > BINARY_CONTROL_RATIO)
+        if (controlRatio(sample) > BINARY_CONTROL_RATIO)
             return null;
         byte[] out = data.clone();
         for (int i = 0; i < out.length; i++) {
             int c = out[i] & 0xff;
-            if (c < 0x20 && c != '\t' && c != '\n' && c != '\r')
+            if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7F)
                 out[i] = ' ';
         }
         return out;
+    }
+
+    private static final Pattern NUMERIC_REFERENCE = Pattern.compile("&#([xX][0-9a-fA-F]{1,6}|[0-9]{1,7});?");
+
+    /**
+     * Numeric character references to control characters (&amp;#127;, &amp;#129;, &amp;#1; ...) become control characters
+     * in the parsed text, which Tika's SafeContentHandler turns into U+FFFD. References 130-159 are what browsers show
+     * as the windows-1252 character (&amp;#150; is an en dash), so they are rewritten to that character's own reference;
+     * the other controls and the undefined slots (127, 129, 141, 143, 144, 157) become a space. The data is only touched
+     * as ASCII, so this is meant for HTML in any ASCII-compatible charset (no UTF-16/32, no ISO-2022).
+     *
+     * @return the repaired bytes, or null if there is nothing to repair
+     */
+    public static byte[] repairControlReferences(byte[] data) {
+        boolean candidate = false;
+        for (int i = 0; i + 2 < data.length && !candidate; i++)
+            candidate = data[i] == '&' && data[i + 1] == '#';
+        if (!candidate)
+            return null;
+        Charset bom = bomCharset(data);
+        if (bom != null && bom != StandardCharsets.UTF_8)
+            return null;
+        if (nulRatio(data) > 0.2)
+            return null;
+        String latin = new String(data, StandardCharsets.ISO_8859_1);
+        Matcher m = NUMERIC_REFERENCE.matcher(latin);
+        StringBuilder out = null;
+        int last = 0;
+        while (m.find()) {
+            String digits = m.group(1);
+            int value;
+            try {
+                value = digits.charAt(0) == 'x' || digits.charAt(0) == 'X'
+                        ? Integer.parseInt(digits.substring(1), 16) : Integer.parseInt(digits);
+            } catch (NumberFormatException e) {
+                continue;
+            }
+            String replacement;
+            if (value >= 0x80 && value <= 0x9F) {
+                char mapped = new String(new byte[] { (byte) value }, WINDOWS_1252).charAt(0);
+                replacement = mapped == '\uFFFD' ? " " : "&#" + (int) mapped + ";";
+            } else if ((value < 0x20 && value != '\t' && value != '\n' && value != '\r') || value == 0x7F) {
+                replacement = " ";
+            } else {
+                continue;
+            }
+            if (out == null)
+                out = new StringBuilder(latin.length());
+            out.append(latin, last, m.start()).append(replacement);
+            last = m.end();
+        }
+        if (out == null)
+            return null;
+        out.append(latin, last, latin.length());
+        return out.toString().getBytes(StandardCharsets.ISO_8859_1);
     }
 
     private static final Pattern XML_PROLOG = Pattern.compile("^<\\?xml\\s[^>]*\\?>");
@@ -595,6 +930,24 @@ public class TextEncodingDetector implements EncodingDetector {
      * A lone 0xC2/0xC3 (A-circumflex, A-tilde) right before punctuation, whitespace or the end is the first half of a
      * multi-byte character that was cut off (e.g. a title truncated by bytes), not an intended letter.
      */
+    private static int cutOffLength(byte[] b, int i) {
+        if (looksCutOff(b, i))
+            return 1;
+        int c = b[i] & 0xff;
+        if (c < 0xE0 || c > 0xF4)
+            return 0;
+        int need = c < 0xF0 ? 2 : 3;
+        int k = 0;
+        while (k < need && i + 1 + k < b.length && (b[i + 1 + k] & 0xC0) == 0x80)
+            k++;
+        if (k == 0 || k >= need)
+            return 0;
+        if (i + 1 + k >= b.length)
+            return 1 + k;
+        int next = b[i + 1 + k] & 0xff;
+        return next < 0x80 && !Character.isLetterOrDigit(next) ? 1 + k : 0;
+    }
+
     private static boolean looksCutOff(byte[] b, int i) {
         int c = b[i] & 0xff;
         if (c != 0xC2 && c != 0xC3)
@@ -632,6 +985,15 @@ public class TextEncodingDetector implements EncodingDetector {
                 return 0;
         }
         return need + 1;
+    }
+
+    private static final Pattern META_CHARSET_LABEL = Pattern.compile("<meta[^>]{0,400}?charset\\s*=\\s*[\"']?\\s*([A-Za-z0-9_:.\\-]+)", Pattern.CASE_INSENSITIVE);
+
+    /** The charset label as the HTML meta tag writes it (lowercase), even if Java has no such charset; empty if none. */
+    public static String metaCharsetLabel(byte[] data) {
+        String head = new String(data, 0, Math.min(data.length, 8192), StandardCharsets.ISO_8859_1);
+        Matcher m = META_CHARSET_LABEL.matcher(head);
+        return m.find() ? m.group(1).toLowerCase(Locale.ROOT) : "";
     }
 
     private static Charset metaCharset(byte[] data) {
@@ -684,6 +1046,8 @@ public class TextEncodingDetector implements EncodingDetector {
             case "cp819": case "ibm819": case "us-ascii": case "ascii": case "iso-ir-100": case "cp1252":
             case "x-cp1252": case "windows-1252":
                 return WINDOWS_1252;
+            case "macintosh": case "macroman": case "x-mac-roman": case "mac":
+                return Charset.forName("x-MacRoman");
             case "utf8": case "utf-8": case "unicode-1-1-utf-8":
                 return StandardCharsets.UTF_8;
             case "gb2312": case "gbk": case "x-gbk": case "gb_2312-80": case "gb18030":

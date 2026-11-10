@@ -102,7 +102,9 @@ public class LocalDocumentIndexer {
         Collection<TextDocumentData> docs = indexer.getEntries().values();
 
         try (Writer w = new OutputStreamWriter(new FileOutputStream(outPath), StandardCharsets.UTF_8);
-             Writer issuesOut = new OutputStreamWriter(new FileOutputStream(outPath + ".issues.tsv"), StandardCharsets.UTF_8)) {
+             Writer issuesOut = new OutputStreamWriter(new FileOutputStream(outPath + ".issues.tsv"), StandardCharsets.UTF_8);
+             Writer docsOut = new OutputStreamWriter(new FileOutputStream(outPath + ".docs.tsv"), StandardCharsets.UTF_8)) {
+            docsOut.write("warc\toffset\tclean\ttolerant\ttype\turl\n");
             issuesOut.write("issue\tdeclared\tchosen\treason\twarc\toffset\turl\tdetail\n");
             for (TextDocumentData doc : docs) {
                 String json = gson.toJson(doc);
@@ -155,6 +157,8 @@ public class LocalDocumentIndexer {
                 if (tolerant)
                     group[2]++;
                 String url = doc.getURL() == null || doc.getURL().isEmpty() ? "" : doc.getURL().get(0);
+                docsOut.write(doc.getWarc() + "\t" + doc.getWarcOffset() + "\t" + (decodedBadly ? 0 : 1) + "\t" + (tolerant ? 1 : 0)
+                        + "\t" + detected + "\t" + url + "\n");
                 boolean sourceBroken = decision != null && decision.length > 3 && "true".equals(decision[3]);
                 for (TextQualityChecker.Issue issue : issues) {
                     String type = issue.type == TextQualityChecker.Type.REPLACEMENT_CHAR && sourceBroken
@@ -205,6 +209,20 @@ public class LocalDocumentIndexer {
         LocalDocumentIndexer.Map map = new Map(collection);
         map.indexer.trackCharsetDecisions();
 
+        // Optional 4th argument: file for the charset dataset (reported vs detected charset); 5th: percent of agreeing pages to keep
+        java.io.Writer datasetWriter = null;
+        if (args.length >= 4 && !args[3].isEmpty()) {
+            try {
+                datasetWriter = new java.io.BufferedWriter(new java.io.OutputStreamWriter(new java.io.FileOutputStream(args[3]),
+                        java.nio.charset.StandardCharsets.UTF_8));
+                datasetWriter.write(pt.arquivo.imagesearch.indexing.utils.CharsetDatasetRow.HEADER + "\n");
+                map.indexer.setCharsetDataset(datasetWriter, args.length >= 5 ? Integer.parseInt(args[4]) : 1);
+            } catch (IOException e) {
+                logger.error("Error opening charset dataset: " + args[3], e);
+                datasetWriter = null;
+            }
+        }
+
         try (BufferedReader br = new BufferedReader(new FileReader(hdfsArcsPath))) {
             for (String line; (line = br.readLine()) != null; ) {
                 if (!line.trim().isEmpty())
@@ -212,6 +230,14 @@ public class LocalDocumentIndexer {
             }
         } catch (IOException e) {
             logger.error("Error reading file: " + hdfsArcsPath);
+        }
+
+        if (datasetWriter != null) {
+            try {
+                datasetWriter.close();
+            } catch (IOException e) {
+                logger.error("Error closing charset dataset", e);
+            }
         }
 
         System.out.println(map.indexer.getEntries().size());

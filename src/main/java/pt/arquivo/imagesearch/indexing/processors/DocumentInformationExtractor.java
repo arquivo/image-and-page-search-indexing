@@ -32,6 +32,9 @@ import org.xml.sax.SAXException;
 
 import pt.arquivo.imagesearch.indexing.utils.HttpBodyDecoder;
 import pt.arquivo.imagesearch.indexing.utils.ImageSearchIndexingUtil;
+import pt.arquivo.imagesearch.indexing.utils.CharsetDatasetRow;
+import pt.arquivo.imagesearch.indexing.utils.ContentSniffer;
+import pt.arquivo.imagesearch.indexing.utils.MojibakeRepair;
 import pt.arquivo.imagesearch.indexing.utils.TextEncodingDetector;
 import pt.arquivo.imagesearch.indexing.utils.WARCRecordResponseEncapsulated;
 import pt.arquivo.imagesearch.indexing.utils.MimeTypeCounters.PAGE_INDEXER_COUNTERS_DETECTED;
@@ -67,7 +70,7 @@ public class DocumentInformationExtractor implements InformationExtractor {
             "application/vnd.sun.xml.calc", "application/vnd.sun.xml.calc.template", "application/vnd.sun.xml.impress",
             "application/vnd.sun.xml.impress.template", "application/vnd.sun.xml.writer",
             "application/vnd.sun.xml.writer.template", "application/xhtml+xml", "application/x-bzip2",
-            "application/x-gzip", "application/x-kword", "application/x-kspread", "application/x-shockwave-flash",
+            "application/x-gzip", "application/gzip", "application/x-kword", "application/x-kspread", "application/x-shockwave-flash",
             "application/zip", "application/rtf", "text/html", "text/plain", "text/richtext", "text/rtf", "text/sgml",
             "text/tab-separated-values", "text/xml"));
 
@@ -111,6 +114,8 @@ public class DocumentInformationExtractor implements InformationExtractor {
      * When set, records for each document which charset was declared and which was chosen (keyed by content digest)
      */
     private HashMap<String, String[]> charsetDecisions = null;
+    private java.io.Writer charsetDataset = null;
+    private int charsetDatasetAgreePercent = 1;
 
     /**
      * Documents already parsed during this session
@@ -228,6 +233,10 @@ public class DocumentInformationExtractor implements InformationExtractor {
             logger.warn("Skipping record with URL: " + url);
             return;
         }
+        if (isCodeFile(url, mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_CODE).increment(1);
+            return;
+        }
         parseTextRecord(record, warcName);
 
     }
@@ -266,6 +275,10 @@ public class DocumentInformationExtractor implements InformationExtractor {
 
         if (!allowURL(url)) {
             logger.warn("Skipping record with URL: " + url);
+            return;
+        }
+        if (isCodeFile(url, mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_CODE).increment(1);
             return;
         }
 
@@ -446,6 +459,8 @@ public class DocumentInformationExtractor implements InformationExtractor {
 
         InputStream stream;
         boolean sourceHasReplacementChar = false;
+        boolean sniffedContainer = false;
+        String metaCharsetLabel = "";
         String repairReason = null;
         String xmlReason = null;
         boolean decodedAsText = isTextLike(mimeType);
@@ -463,29 +478,55 @@ public class DocumentInformationExtractor implements InformationExtractor {
                     return textDocumentData;
                 }
                 md5Stream.update(bytes);
-                if (charsetDecisions != null)
-                    sourceHasReplacementChar = TextEncodingDetector.containsReplacementChar(bytes);
-                byte[] repaired = TextEncodingDetector.repairStrayBytes(bytes, declaredCharset);
+                sourceHasReplacementChar = TextEncodingDetector.containsReplacementChar(bytes);
+                if (charsetDataset != null && mimeType.contains("html"))
+                    metaCharsetLabel = TextEncodingDetector.metaCharsetLabel(bytes);
+                ContentSniffer.Kind sniffed = ContentSniffer.sniff(bytes);
+                if (sniffed == ContentSniffer.Kind.BINARY) {
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_SNIFFED_BINARY).increment(1);
+                    return textDocumentData;
+                }
+                sniffedContainer = sniffed == ContentSniffer.Kind.CONTAINER;
+                if (sniffedContainer)
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_SNIFFED_CONTAINER).increment(1);
+                byte[] noBom = sniffedContainer ? null : TextEncodingDetector.dropFalseUtf8Bom(bytes);
+                if (noBom != null) {
+                    bytes = noBom;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FALSE_BOM_DROPPED).increment(1);
+                }
+                byte[] repaired = sniffedContainer ? null : TextEncodingDetector.repairStrayBytes(bytes, declaredCharset);
                 if (repaired != null) {
                     repairReason = "UTF8_REPAIRED";
-                } else {
+                } else if (!sniffedContainer) {
                     repaired = TextEncodingDetector.repairEmbeddedUtf8(bytes, declaredCharset);
                     if (repaired != null)
                         repairReason = "LATIN_REPAIRED";
                 }
                 if (repaired != null)
                     bytes = repaired;
-                byte[] c1 = TextEncodingDetector.repairC1InUtf8(bytes, declaredCharset);
+                byte[] c1 = sniffedContainer ? null : TextEncodingDetector.repairC1InUtf8(bytes, declaredCharset);
                 if (c1 != null) {
                     bytes = c1;
                     getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_C1_CONTROLS_REMAPPED).increment(1);
                 }
-                byte[] stripped = TextEncodingDetector.stripControlBytes(bytes);
+                byte[] noUndefined = sniffedContainer ? null : TextEncodingDetector.dropUndefinedLatinBytes(bytes, declaredCharset);
+                if (noUndefined != null) {
+                    bytes = noUndefined;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_UNDEFINED_LATIN_BYTES_DROPPED).increment(1);
+                }
+                byte[] stripped = sniffedContainer ? null : TextEncodingDetector.stripControlBytes(bytes);
                 if (stripped != null) {
                     bytes = stripped;
                     getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_CONTROL_CHARS_STRIPPED).increment(1);
                 }
-                if (isXml(mimeType)) {
+                if (mimeType.contains("html") && !sniffedContainer) {
+                    byte[] refs = TextEncodingDetector.repairControlReferences(bytes);
+                    if (refs != null) {
+                        bytes = refs;
+                        getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_CONTROL_REFERENCES_REPAIRED).increment(1);
+                    }
+                }
+                if (isXml(mimeType) && !sniffedContainer) {
                     TextEncodingDetector.XmlResult xml = TextEncodingDetector.xmlToUtf8(bytes, declaredCharset);
                     bytes = xml.bytes;
                     xmlReason = xml.resolution.reason.name();
@@ -508,7 +549,7 @@ public class DocumentInformationExtractor implements InformationExtractor {
         }
 
          Parser parser = null;
-         if (mimeType.equals("text/html")) {
+         if (mimeType.equals("text/html") && !sniffedContainer) {
              parser = new HtmlParser();
          } else {
              parser = new AutoDetectParser(config);
@@ -519,7 +560,7 @@ public class DocumentInformationExtractor implements InformationExtractor {
             metadata.set(TextEncodingDetector.DECLARED_CHARSET, declaredCharset);
         // Tika's magic detection calls text in legacy 8-bit charsets application/octet-stream; the hint only applies
         // when it finds nothing more specific
-        if (isTextLike(mimeType) && !mimeType.equals("text/html"))
+        if (isTextLike(mimeType) && !mimeType.equals("text/html") && !sniffedContainer)
             metadata.set(Metadata.CONTENT_TYPE, mimeType);
         BodyContentHandler bodyHandler = new BodyContentHandler(CONTENT_CHAR_LIMIT);
 
@@ -590,6 +631,8 @@ public class DocumentInformationExtractor implements InformationExtractor {
             LanguageDetector detector = LanguageDetector.getDefaultLanguageDetector().loadModels();
 
             detector.addText(body);
+            // Whether the page is Portuguese is decided by its body alone: titles and anchor texts often name foreign works
+            LanguageResult bodyLanguage = detector.detect();
 
             String title = metadata.get("dc:title");
 
@@ -601,8 +644,6 @@ public class DocumentInformationExtractor implements InformationExtractor {
             if (title == null || title.isEmpty())
                 title = body.substring(0, Math.min(body.length(), TITLE_FROM_BODY_MAX_LENGTH));
 
-            textDocumentData.addTitle(title);
-            
             detector.addText(title);
 
             LanguageResult languageResult = detector.detect();
@@ -611,6 +652,20 @@ public class DocumentInformationExtractor implements InformationExtractor {
                 textDocumentData.setLanguage(languageResult.getLanguage());
                 textDocumentData.setLanguageConfidence(languageResult.getConfidence().toString());
             }
+
+            // Pages in Portuguese that carry double-encoded text ("CidadÃ£os") are repaired; other languages are left as they are
+            final boolean portuguese = bodyLanguage != null && "pt".equals(bodyLanguage.getLanguage());
+            boolean mojibakeRepaired = false;
+            if (portuguese) {
+                String repairedBody = MojibakeRepair.repair(body);
+                String repairedTitle = MojibakeRepair.repair(title);
+                mojibakeRepaired = repairedBody != body || repairedTitle != title;
+                if (mojibakeRepaired)
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_MOJIBAKE_REPAIRED).increment(1);
+                body = repairedBody;
+                title = repairedTitle;
+            }
+            textDocumentData.addTitle(title);
 
             List<String> metadataStrings = new LinkedList<>();
 
@@ -623,12 +678,16 @@ public class DocumentInformationExtractor implements InformationExtractor {
             }
 
             String metadataString = removeJunkCharacters(String.join("\n", metadataStrings).trim());
+            if (portuguese)
+                metadataString = MojibakeRepair.repair(metadataString);
 
             textDocumentData.addMetadata(metadataString);
 
             linkHandler.getLinks().forEach(link -> {
                 String linkURL = link.getUri();
                 String anchorText = removeJunkCharacters(link.getText());
+                if (portuguese)
+                    anchorText = MojibakeRepair.repair(anchorText);
                 if (anchorText.length() > ANCHOR_CHAR_LIMIT) {
                     anchorText = anchorText.substring(0, ANCHOR_CHAR_LIMIT);
                 }
@@ -653,6 +712,13 @@ public class DocumentInformationExtractor implements InformationExtractor {
 
             textDocumentData.addContent(body);
 
+            if (sourceHasReplacementChar)
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_SOURCE_HAS_REPLACEMENT_CHAR).increment(1);
+            if (charsetDataset != null && decodedAsText && !sniffedContainer && !mojibakeRepaired
+                    && (mimeType.contains("html") || mimeType.equals("text/plain")))
+                writeCharsetDatasetRow(textDocumentData, url, timestamp, arcName, offset, declaredCharset, metaCharsetLabel,
+                        metadata.get(TextEncodingDetector.RESOLVED_CHARSET),
+                        repairReason != null ? repairReason : metadata.get(TextEncodingDetector.RESOLUTION_REASON), repairReason != null);
             if (charsetDecisions != null)
                 charsetDecisions.put(digest, new String[] { declaredCharset, metadata.get(TextEncodingDetector.RESOLVED_CHARSET),
                         metadata.get(TextEncodingDetector.RESOLUTION_REASON), String.valueOf(sourceHasReplacementChar) });
@@ -770,6 +836,34 @@ public class DocumentInformationExtractor implements InformationExtractor {
     /**
      * Content digest -> {declared charset, chosen charset, reason, "true" if the source bytes already contained U+FFFD}; null unless tracking was enabled
      */
+    /**
+     * Optional dataset of pages whose reported charset differs from the detected one (plus a sample of agreeing pages),
+     * one line per captured URL, to tune other replayers. Pages whose text was repaired afterwards are left out, since the
+     * detection may have been wrong to begin with.
+     *
+     * @param agreePercent share (0-100) of the agreeing pages to include
+     */
+    public void setCharsetDataset(java.io.Writer writer, int agreePercent) {
+        this.charsetDataset = writer;
+        this.charsetDatasetAgreePercent = agreePercent;
+    }
+
+    private void writeCharsetDatasetRow(TextDocumentData doc, String url, String timestamp, String warc, long offset,
+            String httpCharset, String metaCharset, String detected, String reason, boolean mixed) {
+        if (detected == null || reason == null || reason.equals("ASCII") || reason.equals("BINARY"))
+            return;
+        boolean agrees = CharsetDatasetRow.agrees(httpCharset, metaCharset, detected);
+        if (agrees && Math.floorMod((url + timestamp).hashCode(), 100) >= charsetDatasetAgreePercent)
+            return;
+        String surt = doc.getSurts() == null || doc.getSurts().isEmpty() ? "" : doc.getSurts().get(0);
+        try {
+            charsetDataset.write(CharsetDatasetRow.format(url, timestamp, surt, collection, warc, offset, httpCharset, metaCharset,
+                    detected, reason, mixed, agrees) + "\n");
+        } catch (IOException e) {
+            logger.error("Error writing charset dataset row: " + url, e);
+        }
+    }
+
     public HashMap<String, String[]> getCharsetDecisions() {
         return charsetDecisions;
     }
@@ -807,6 +901,41 @@ public class DocumentInformationExtractor implements InformationExtractor {
                 entriesRedirect.put(surt, pageImageData);
             }
         }
+    }
+
+    /** Extensions of source code and style sheets, which are not worth indexing as text. */
+    private static final Set<String> CODE_EXTENSIONS = new HashSet<>(Arrays.asList("js", "mjs", "cjs", "jsx", "ts", "tsx", "map",
+            "css", "scss", "sass", "less", "java", "c", "h", "cc", "cpp", "cxx", "hpp", "cs", "py", "rb", "go", "rs", "sh",
+            "bat", "lua", "swift", "kt", "scala"));
+
+    /** Types reported for source code and style sheets. */
+    private static final Set<String> CODE_MIMETYPES = new HashSet<>(Arrays.asList("text/javascript", "application/javascript",
+            "application/x-javascript", "application/ecmascript", "text/ecmascript", "text/jscript", "text/css", "text/x-c",
+            "text/x-csrc", "text/x-chdr", "text/x-c++src", "text/x-c++hdr", "text/x-java", "text/x-java-source", "text/x-python",
+            "text/x-script.python", "application/x-python-code", "text/x-perl", "text/x-ruby", "text/x-shellscript",
+            "application/x-sh", "application/x-csh", "text/x-php", "application/x-httpd-php-source"));
+
+    /**
+     * True for source code and style sheets: by the reported type or, for records not reported as HTML (CGI scripts and
+     * repository viewers end in .pl/.py/.c and are HTML pages), by the extension of the URL path (query and fragment ignored).
+     */
+    public static boolean isCodeFile(String url, String mimeType) {
+        String type = mimeType == null ? "" : mimeType.split(";")[0].trim().toLowerCase(Locale.ROOT);
+        if (CODE_MIMETYPES.contains(type))
+            return true;
+        if (url == null || type.contains("html"))
+            return false;
+        int end = url.length();
+        int cut = url.indexOf('#');
+        if (cut >= 0)
+            end = cut;
+        cut = url.indexOf('?');
+        if (cut >= 0 && cut < end)
+            end = cut;
+        String path = url.substring(0, end);
+        String last = path.substring(path.lastIndexOf('/') + 1);
+        int dot = last.lastIndexOf('.');
+        return dot >= 0 && CODE_EXTENSIONS.contains(last.substring(dot + 1).toLowerCase(Locale.ROOT));
     }
 
     private boolean allowURL(String url) {
