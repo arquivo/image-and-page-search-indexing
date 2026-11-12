@@ -531,6 +531,11 @@ public class DocumentInformationExtractor implements InformationExtractor {
                     bytes = c1;
                     getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_C1_CONTROLS_REMAPPED).increment(1);
                 }
+                byte[] noPictographs = sniffedContainer ? null : TextEncodingDetector.replacePictographs(bytes, declaredCharset);
+                if (noPictographs != null) {
+                    bytes = noPictographs;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_PICTOGRAPHS_REPLACED).increment(1);
+                }
                 byte[] noUndefined = sniffedContainer ? null : TextEncodingDetector.dropUndefinedLatinBytes(bytes, declaredCharset);
                 if (noUndefined != null) {
                     bytes = noUndefined;

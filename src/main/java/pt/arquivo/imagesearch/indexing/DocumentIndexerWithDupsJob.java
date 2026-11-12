@@ -112,6 +112,7 @@ public class DocumentIndexerWithDupsJob extends Configured implements Tool {
         RECORDS_SKIPPED_CODE,
         RECORDS_SKIPPED_XML,
         RECORDS_SKIPPED_JSON,
+        RECORDS_TIKA_PICTOGRAPHS_REPLACED,
         RECORDS_TIKA_UNMAPPED_GLYPHS_REPLACED,
 
         CHARSET_BOM,

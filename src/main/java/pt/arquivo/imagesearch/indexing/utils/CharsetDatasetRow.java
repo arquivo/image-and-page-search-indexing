@@ -49,6 +49,7 @@ public final class CharsetDatasetRow {
         switch (javaName) {
             case "windows-31j": return "shift_jis";
             case "x-windows-949": return "euc-kr";
+            case "x-eucJP-Open": return "euc-jp";
             case "x-MacRoman": return "macintosh";
             case "Big5-HKSCS": return "big5";
             case "x-windows-874": return "windows-874";

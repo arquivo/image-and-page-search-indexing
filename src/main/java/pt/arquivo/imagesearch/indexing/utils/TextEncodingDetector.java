@@ -1035,6 +1035,49 @@ public class TextEncodingDetector implements EncodingDetector {
         }
     }
 
+    /**
+     * Emoji and other pictographs (supplementary plane, one character = a pair of UTF-16 units) are replaced by a space, and the
+     * styled letters of the Mathematical Alphanumeric Symbols by their plain letters. TagSoup hands text to Tika in chunks of
+     * 180 characters and cuts a pair in two where a chunk ends; Tika then turns both halves into U+FFFD, so about one emoji in
+     * 180 came out as two replacement characters. Only data read as UTF-8 is touched.
+     *
+     * @return the bytes without them, or null if there is nothing to replace or the data is not UTF-8
+     */
+    public static byte[] replacePictographs(byte[] data, String declaredHttp) {
+        boolean supplementary = false;
+        for (byte b : data)
+            if ((b & 0xFF) >= 0xF0 && (b & 0xFF) <= 0xF4) {
+                supplementary = true;
+                break;
+            }
+        if (!supplementary || !StandardCharsets.UTF_8.equals(resolve(data, declaredHttp).charset))
+            return null;
+        String s = new String(data, StandardCharsets.UTF_8);
+        StringBuilder out = new StringBuilder(s.length());
+        boolean changed = false;
+        for (int i = 0; i < s.length(); ) {
+            int cp = s.codePointAt(i);
+            int len = Character.charCount(cp);
+            if (isPictograph(cp)) {
+                out.append(' ');
+                changed = true;
+            } else if ((cp >= 0x1D400 && cp <= 0x1D7FF) || (cp >= 0x1F100 && cp <= 0x1F1FF)) {
+                String plain = java.text.Normalizer.normalize(s.substring(i, i + len), java.text.Normalizer.Form.NFKC);
+                out.append(plain.isEmpty() || plain.codePointAt(0) >= 0x10000 ? " " : plain);
+                changed = true;
+            } else {
+                out.append(s, i, i + len);
+            }
+            i += len;
+        }
+        return changed ? out.toString().getBytes(StandardCharsets.UTF_8) : null;
+    }
+
+    private static boolean isPictograph(int cp) {
+        return (cp >= 0x1F000 && cp <= 0x1F0FF) || (cp >= 0x1F200 && cp <= 0x1FAFF) || (cp >= 0x1FB00 && cp <= 0x1FBFF)
+                || (cp >= 0xE0000 && cp <= 0xE01EF);
+    }
+
     /** UTF-16/32 are only believable with a BOM or visible NULs; otherwise a declaration is ignored (WHATWG does the same). */
     private static boolean usable(Charset c, boolean looksWide) {
         if (c == null)
@@ -1089,6 +1132,9 @@ public class TextEncodingDetector implements EncodingDetector {
                 return Charset.forName("windows-874");
             case "shift_jis": case "shift-jis": case "sjis": case "x-sjis": case "ms_kanji": case "windows-31j":
                 return Charset.forName("windows-31j");
+            case "euc-jp": case "x-euc-jp": case "eucjp": case "x-eucjp": case "ujis":
+                // pages in "EUC-JP" use the NEC and IBM extensions (circled digits, roman numerals ...) that plain EUC-JP rejects
+                return Charset.isSupported("x-eucJP-Open") ? Charset.forName("x-eucJP-Open") : Charset.forName("EUC-JP");
             case "big5": case "big5-hkscs": case "x-big5":
                 return Charset.forName("Big5-HKSCS");
             case "euc-kr": case "ks_c_5601-1987": case "windows-949":

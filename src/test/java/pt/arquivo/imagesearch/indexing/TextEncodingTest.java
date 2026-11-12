@@ -402,6 +402,36 @@ public class TextEncodingTest {
     }
 
     @Test
+    public void emojiAtAChunkBoundaryDoNotBecomeReplacementCharacters() throws Exception {
+        // TagSoup cuts the text every 180 characters; a pair of UTF-16 units cut in two used to come out as two U+FFFD
+        for (int pad : new int[] {0, 177, 179, 357, 359, 537, 539}) {
+            String text = repeat("x", pad) + " Informa\u00e7\u00e3o \ud83d\udc81\ud83c\udffb \ud83c\udf10 fim da frase";
+            byte[] b = ("<html><body><p>" + text + "</p></body></html>").getBytes("UTF-8");
+            String out = parse(b, "text/html", "utf-8");
+            assertFalse("padding " + pad + ": " + out, out.contains("\ufffd"));
+            assertTrue(out, out.contains("Informa\u00e7\u00e3o") && out.contains("fim da frase"));
+        }
+    }
+
+    @Test
+    public void styledLettersBecomePlainLettersAndOtherUtf8IsLeftAlone() throws Exception {
+        byte[] data = "<p>\ud835\udc12\ud835\udc1e rainha \u00e7\u00e3o \ud83d\ude00</p>".getBytes("UTF-8");
+        String out = new String(TextEncodingDetector.replacePictographs(data, "utf-8"), "UTF-8");
+        assertEquals("<p>Se rainha \u00e7\u00e3o  </p>", out);
+        assertNull(TextEncodingDetector.replacePictographs("<p>sem emoji \u00e7\u00e3o</p>".getBytes("UTF-8"), "utf-8"));
+        assertNull(TextEncodingDetector.replacePictographs("<p>\ud83d\ude00</p>".getBytes("UTF-16LE"), null));
+    }
+
+    @Test
+    public void eucJpExtensionsDecodeWithoutReplacementCharacters() throws Exception {
+        String text = "\u6771\u6dc0\u8def\u533a \u2460\u2461\u2462 \u2160\u2161 \u3231 " + JA;
+        byte[] b = html(repeat(text, 3), null, Charset.forName("x-eucJP-Open"));
+        String out = parse(b, "text/html", "euc-jp");
+        assertTrue(out, out.contains("\u2460\u2461\u2462"));
+        assertFalse(out, out.contains("\ufffd"));
+    }
+
+    @Test
     public void jsonTypesAreRecognised() {
         assertTrue(DocumentInformationExtractor.isJsonMime("application/json"));
         assertTrue(DocumentInformationExtractor.isJsonMime("application/json; charset=utf-8"));
@@ -662,7 +692,7 @@ public class TextEncodingTest {
     public void eucJpDeclaredLatin1IsDecodedAsEucJp() throws Exception {
         byte[] b = html(repeat(JA, 5), null, Charset.forName("EUC-JP"));
         Resolution r = TextEncodingDetector.resolve(b, "iso-8859-1");
-        assertEquals("EUC-JP", r.charset.name());
+        assertEquals("x-eucJP-Open", r.charset.name());
         assertTrue(parse(b, "text/html", "iso-8859-1").contains("自治体アンケート"));
     }
 
