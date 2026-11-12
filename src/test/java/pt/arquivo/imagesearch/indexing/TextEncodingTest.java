@@ -391,11 +391,24 @@ public class TextEncodingTest {
     }
 
     @Test
+    public void imagesWithMangledHeadersAreNotIndexed() throws Exception {
+        byte[] fffd = {(byte) 0xEF, (byte) 0xBF, (byte) 0xBD};
+        byte[] png = concat(fffd, "PNG\r\n\u001a\n".getBytes("ISO-8859-1"), new byte[] {0, 0, 0, 13}, "IHDR".getBytes(), new byte[] {0, 0, 1, 0, 0, 0, 1, 0, 8, 6}, "?q\u00e7\u00e9".getBytes("ISO-8859-1"));
+        byte[] jpeg = concat(fffd, fffd, fffd, fffd, "JFIF".getBytes(), new byte[] {0, 1, 1, 0, 0, 1, 0, 1}, "gd-jpeg v1.0".getBytes());
+        assertEquals(ContentSniffer.Kind.BINARY, ContentSniffer.sniff(png));
+        assertEquals(ContentSniffer.Kind.BINARY, ContentSniffer.sniff(jpeg));
+        assertEquals(0, indexedDocuments(png, "text/html"));
+        assertEquals(ContentSniffer.Kind.NONE, ContentSniffer.sniff("A JFIF file and a PNG file are image formats, Exif too.".getBytes("UTF-8")));
+    }
+
+    @Test
     public void jsonTypesAreRecognised() {
         assertTrue(DocumentInformationExtractor.isJsonMime("application/json"));
         assertTrue(DocumentInformationExtractor.isJsonMime("application/json; charset=utf-8"));
         assertTrue(DocumentInformationExtractor.isJsonMime("application/ld+json"));
         assertTrue(DocumentInformationExtractor.isJsonMime("application/manifest+json"));
+        assertTrue(DocumentInformationExtractor.isJsonMime("application/json+oembed"));
+        assertTrue(DocumentInformationExtractor.isJsonMime("text/x-json"));
         assertFalse(DocumentInformationExtractor.isJsonMime("text/html"));
         assertFalse(DocumentInformationExtractor.isJsonMime("application/javascript"));
         assertFalse(DocumentInformationExtractor.isJsonMime(null));

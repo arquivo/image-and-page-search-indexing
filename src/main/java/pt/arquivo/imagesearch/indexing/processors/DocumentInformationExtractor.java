@@ -976,7 +976,7 @@ public class DocumentInformationExtractor implements InformationExtractor {
         if (mimeType == null)
             return false;
         String type = mimeType.split(";")[0].trim().toLowerCase(Locale.ROOT);
-        return type.equals("application/json") || type.equals("text/json") || type.equals("application/x-json") || type.endsWith("+json");
+        return type.contains("json") && !type.contains("javascript");
     }
 
     /** XML meant for programs (feeds, sitemaps, data): not worth indexing. XHTML is HTML and stays. */

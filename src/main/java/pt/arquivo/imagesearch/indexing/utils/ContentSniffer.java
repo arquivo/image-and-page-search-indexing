@@ -29,6 +29,8 @@ public final class ContentSniffer {
                 || startsWith(d, 'f', 'L', 'a', 'C') || startsWith(d, 'I', 'D', '3') || startsWith(d, 0x1A, 0x45, 0xDF, 0xA3)
                 || startsWith(d, 0x7F, 'E', 'L', 'F') || isRiffMedia(d) || isIsoMedia(d) || isBmp(d))
             return Kind.BINARY;
+        if (hasDamagedImageHeader(d))
+            return Kind.BINARY;
         if (startsWith(d, "%PDF-") || startsWith(d, 'P', 'K', 0x03, 0x04) || startsWith(d, 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1)
                 || startsWith(d, 0x1F, 0x8B) || isBzip2(d) || startsWith(d, '7', 'z', 0xBC, 0xAF, 0x27, 0x1C)
                 || startsWith(d, 'R', 'a', 'r', '!', 0x1A, 0x07) || startsWith(d, 0xFD, '7', 'z', 'X', 'Z', 0x00))
@@ -86,6 +88,23 @@ public final class ContentSniffer {
         } catch (java.io.IOException | RuntimeException e) {
             return false;
         }
+    }
+
+    /**
+     * Images whose first bytes were mangled on their way into the archive (a PNG's 0x89 or a JPEG's FF D8 FF E0 turned into the
+     * UTF-8 bytes of U+FFFD), so the usual signature is gone but the rest of the header is still there. A NUL after "JFIF"
+     * or a PNG signature after a few bytes cannot start a text.
+     */
+    private static boolean hasDamagedImageHeader(byte[] d) {
+        int limit = Math.min(d.length, 40);
+        for (int i = 0; i < 16 && i + 8 <= limit; i++)
+            if (d[i] == 'P' && d[i + 1] == 'N' && d[i + 2] == 'G' && d[i + 3] == 0x0D && d[i + 4] == 0x0A && d[i + 5] == 0x1A && d[i + 6] == 0x0A)
+                return true;
+        for (int i = 0; i < 16 && i + 5 <= limit; i++)
+            if (((d[i] == 'J' && d[i + 1] == 'F' && d[i + 2] == 'I' && d[i + 3] == 'F') || (d[i] == 'E' && d[i + 1] == 'x' && d[i + 2] == 'i' && d[i + 3] == 'f'))
+                    && d[i + 4] == 0)
+                return true;
+        return false;
     }
 
     private static boolean isBzip2(byte[] d) {
