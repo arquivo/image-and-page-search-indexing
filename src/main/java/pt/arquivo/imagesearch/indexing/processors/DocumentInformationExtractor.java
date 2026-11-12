@@ -34,6 +34,7 @@ import pt.arquivo.imagesearch.indexing.utils.HttpBodyDecoder;
 import pt.arquivo.imagesearch.indexing.utils.ImageSearchIndexingUtil;
 import pt.arquivo.imagesearch.indexing.utils.CharsetDatasetRow;
 import pt.arquivo.imagesearch.indexing.utils.ContentSniffer;
+import pt.arquivo.imagesearch.indexing.utils.FffdRestorer;
 import pt.arquivo.imagesearch.indexing.utils.MojibakeRepair;
 import pt.arquivo.imagesearch.indexing.utils.TextEncodingDetector;
 import pt.arquivo.imagesearch.indexing.utils.WARCRecordResponseEncapsulated;
@@ -61,7 +62,7 @@ public class DocumentInformationExtractor implements InformationExtractor {
      * File extensions to be included when extracting text
      */
     private static final Set<String> FILES_TO_PARSE_MIMETYPES = new HashSet<>(Arrays.asList("application/msword",
-            "application/pdf", "application/postscript", "application/rss+xml", "application/vnd.ms-excel",
+            "application/pdf", "application/postscript", "application/vnd.ms-excel",
             "application/vnd.ms-powerpoint", "application/vnd.oasis.opendocument.text",
             "application/vnd.oasis.opendocument.text-template", "application/vnd.oasis.opendocument.text-master",
             "application/vnd.oasis.opendocument.text-web", "application/vnd.oasis.opendocument.presentation",
@@ -72,7 +73,7 @@ public class DocumentInformationExtractor implements InformationExtractor {
             "application/vnd.sun.xml.writer.template", "application/xhtml+xml", "application/x-bzip2",
             "application/x-gzip", "application/gzip", "application/x-kword", "application/x-kspread", "application/x-shockwave-flash",
             "application/zip", "application/rtf", "text/html", "text/plain", "text/richtext", "text/rtf", "text/sgml",
-            "text/tab-separated-values", "text/xml"));
+            "text/tab-separated-values"));
 
     private static final Set<String> METADATA_KEYS = new HashSet<>(
             Arrays.asList("dc:creator", "dc:subject", "dc:description"));
@@ -237,6 +238,14 @@ public class DocumentInformationExtractor implements InformationExtractor {
             getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_CODE).increment(1);
             return;
         }
+        if (isXmlData(mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_XML).increment(1);
+            return;
+        }
+        if (isJsonMime(mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_JSON).increment(1);
+            return;
+        }
         parseTextRecord(record, warcName);
 
     }
@@ -279,6 +288,14 @@ public class DocumentInformationExtractor implements InformationExtractor {
         }
         if (isCodeFile(url, mimeType)) {
             getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_CODE).increment(1);
+            return;
+        }
+        if (isXmlData(mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_XML).increment(1);
+            return;
+        }
+        if (isJsonMime(mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_JSON).increment(1);
             return;
         }
 
@@ -486,6 +503,11 @@ public class DocumentInformationExtractor implements InformationExtractor {
                     getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_SNIFFED_BINARY).increment(1);
                     return textDocumentData;
                 }
+                // JSON served as text/html or text/plain (ad and tracker calls): data for programs
+                if (sniffed == ContentSniffer.Kind.NONE && ContentSniffer.isJsonData(bytes)) {
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_JSON).increment(1);
+                    return textDocumentData;
+                }
                 sniffedContainer = sniffed == ContentSniffer.Kind.CONTAINER;
                 if (sniffedContainer)
                     getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_SNIFFED_CONTAINER).increment(1);
@@ -656,6 +678,10 @@ public class DocumentInformationExtractor implements InformationExtractor {
             // Pages in Portuguese that carry double-encoded text ("CidadÃ£os") are repaired; other languages are left as they are
             final boolean portuguese = bodyLanguage != null && "pt".equals(bodyLanguage.getLanguage());
             boolean mojibakeRepaired = false;
+            // restored U+FFFD, counted over body, title, metadata and anchor texts
+            final int[] restoredTokens = new int[1];
+            final FffdRestorer restorer = portuguese ? FffdRestorer.getInstance() : null;
+            boolean brazilianSpelling = false;
             if (portuguese) {
                 String repairedBody = MojibakeRepair.repair(body);
                 String repairedTitle = MojibakeRepair.repair(title);
@@ -664,7 +690,16 @@ public class DocumentInformationExtractor implements InformationExtractor {
                     getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_MOJIBAKE_REPAIRED).increment(1);
                 body = repairedBody;
                 title = repairedTitle;
+                if (restorer != null && body.indexOf('\uFFFD') >= 0) {
+                    brazilianSpelling = restorer.isBrazilian(body);
+                    FffdRestorer.Result restoredBody = restorer.restore(body, brazilianSpelling);
+                    FffdRestorer.Result restoredTitle = restorer.restore(title, brazilianSpelling);
+                    body = restoredBody.text;
+                    title = restoredTitle.text;
+                    restoredTokens[0] += restoredBody.restored + restoredTitle.restored;
+                }
             }
+            final boolean brazilian = brazilianSpelling;
             textDocumentData.addTitle(title);
 
             List<String> metadataStrings = new LinkedList<>();
@@ -678,16 +713,28 @@ public class DocumentInformationExtractor implements InformationExtractor {
             }
 
             String metadataString = removeJunkCharacters(String.join("\n", metadataStrings).trim());
-            if (portuguese)
+            if (portuguese) {
                 metadataString = MojibakeRepair.repair(metadataString);
+                if (restorer != null) {
+                    FffdRestorer.Result restoredMetadata = restorer.restore(metadataString, brazilian);
+                    metadataString = restoredMetadata.text;
+                    restoredTokens[0] += restoredMetadata.restored;
+                }
+            }
 
             textDocumentData.addMetadata(metadataString);
 
             linkHandler.getLinks().forEach(link -> {
                 String linkURL = link.getUri();
                 String anchorText = removeJunkCharacters(link.getText());
-                if (portuguese)
+                if (portuguese) {
                     anchorText = MojibakeRepair.repair(anchorText);
+                    if (restorer != null) {
+                        FffdRestorer.Result restoredAnchor = restorer.restore(anchorText, brazilian);
+                        anchorText = restoredAnchor.text;
+                        restoredTokens[0] += restoredAnchor.restored;
+                    }
+                }
                 if (anchorText.length() > ANCHOR_CHAR_LIMIT) {
                     anchorText = anchorText.substring(0, ANCHOR_CHAR_LIMIT);
                 }
@@ -714,7 +761,11 @@ public class DocumentInformationExtractor implements InformationExtractor {
 
             if (sourceHasReplacementChar)
                 getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_SOURCE_HAS_REPLACEMENT_CHAR).increment(1);
-            if (charsetDataset != null && decodedAsText && !sniffedContainer && !mojibakeRepaired
+            if (restoredTokens[0] > 0) {
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FFFD_RESTORED).increment(1);
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FFFD_TOKENS_RESTORED).increment(restoredTokens[0]);
+            }
+            if (charsetDataset != null && decodedAsText && !sniffedContainer && !mojibakeRepaired && restoredTokens[0] == 0
                     && (mimeType.contains("html") || mimeType.equals("text/plain")))
                 writeCharsetDatasetRow(textDocumentData, url, timestamp, arcName, offset, declaredCharset, metaCharsetLabel,
                         metadata.get(TextEncodingDetector.RESOLVED_CHARSET),
@@ -841,7 +892,9 @@ public class DocumentInformationExtractor implements InformationExtractor {
      * one line per captured URL, to tune other replayers. Pages whose text was repaired afterwards are left out, since the
      * detection may have been wrong to begin with.
      *
-     * @param agreePercent share (0-100) of the agreeing pages to include
+     * Pages without an HTTP charset are always included, since that is where a replayer has to guess.
+     *
+     * @param agreePercent share (0-100) of the other agreeing pages to include
      */
     public void setCharsetDataset(java.io.Writer writer, int agreePercent) {
         this.charsetDataset = writer;
@@ -853,7 +906,8 @@ public class DocumentInformationExtractor implements InformationExtractor {
         if (detected == null || reason == null || reason.equals("ASCII") || reason.equals("BINARY"))
             return;
         boolean agrees = CharsetDatasetRow.agrees(httpCharset, metaCharset, detected);
-        if (agrees && Math.floorMod((url + timestamp).hashCode(), 100) >= charsetDatasetAgreePercent)
+        boolean noHttpCharset = httpCharset == null || httpCharset.trim().isEmpty();
+        if (agrees && !noHttpCharset && Math.floorMod((url + timestamp).hashCode(), 100) >= charsetDatasetAgreePercent)
             return;
         String surt = doc.getSurts() == null || doc.getSurts().isEmpty() ? "" : doc.getSurts().get(0);
         try {
@@ -914,6 +968,24 @@ public class DocumentInformationExtractor implements InformationExtractor {
             "text/x-csrc", "text/x-chdr", "text/x-c++src", "text/x-c++hdr", "text/x-java", "text/x-java-source", "text/x-python",
             "text/x-script.python", "application/x-python-code", "text/x-perl", "text/x-ruby", "text/x-shellscript",
             "application/x-sh", "application/x-csh", "text/x-php", "application/x-httpd-php-source"));
+
+    private static final java.util.regex.Pattern XML_MIMETYPE = java.util.regex.Pattern.compile("^[a-z]+/([a-z0-9.\\-]+\\+)?xml$");
+
+    /** JSON meant for programs (API responses, manifests): not worth indexing. */
+    public static boolean isJsonMime(String mimeType) {
+        if (mimeType == null)
+            return false;
+        String type = mimeType.split(";")[0].trim().toLowerCase(Locale.ROOT);
+        return type.equals("application/json") || type.equals("text/json") || type.equals("application/x-json") || type.endsWith("+json");
+    }
+
+    /** XML meant for programs (feeds, sitemaps, data): not worth indexing. XHTML is HTML and stays. */
+    public static boolean isXmlData(String mimeType) {
+        if (mimeType == null)
+            return false;
+        String type = mimeType.split(";")[0].trim().toLowerCase(Locale.ROOT);
+        return XML_MIMETYPE.matcher(type).matches() && !type.contains("html");
+    }
 
     /**
      * True for source code and style sheets: by the reported type or, for records not reported as HTML (CGI scripts and

@@ -23,6 +23,7 @@ import pt.arquivo.imagesearch.indexing.data.TextDocumentData;
 import pt.arquivo.imagesearch.indexing.processors.DocumentInformationExtractor;
 import pt.arquivo.imagesearch.indexing.utils.ContentSniffer;
 import pt.arquivo.imagesearch.indexing.utils.MojibakeRepair;
+import pt.arquivo.imagesearch.indexing.utils.FffdRestorer;
 import pt.arquivo.imagesearch.indexing.utils.HttpBodyDecoder;
 import pt.arquivo.imagesearch.indexing.utils.TextEncodingDetector;
 import pt.arquivo.imagesearch.indexing.utils.TextEncodingDetector.Reason;
@@ -361,32 +362,57 @@ public class TextEncodingTest {
     private static final String XML_PT = "Cr\u00e9dito e educa\u00e7\u00e3o em Portugu\u00eas, Troms\u00f8 e a\u00e7\u00f5es";
 
     @Test
-    public void latin1FeedDeclaredAsUtf8IsDecodedByOurRules() throws Exception {
-        byte[] body = rss("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", XML_PT, StandardCharsets.ISO_8859_1);
-        String text = parse(body, "application/rss+xml", null);
-        assertTrue(text, text.contains("Cr\u00e9dito e educa\u00e7\u00e3o em Portugu\u00eas"));
-        assertFalse(text, text.contains("\ufffd"));
+    public void feedsAndOtherXmlAreNotIndexed() throws Exception {
+        byte[] body = rss("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", XML_PT, StandardCharsets.UTF_8);
+        assertEquals(0, indexedDocuments(body, "application/rss+xml"));
+        assertEquals(0, indexedDocuments(body, "text/xml"));
+        assertEquals(0, indexedDocuments(body, "application/xml"));
+        assertEquals(0, indexedDocuments(body, "application/atom+xml"));
     }
 
     @Test
-    public void utf8FeedDeclaredAsLatin1IsNotMojibake() throws Exception {
-        byte[] body = rss("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>", XML_PT, StandardCharsets.UTF_8);
-        String text = parse(body, "text/xml", null);
-        assertTrue(text, text.contains("Cr\u00e9dito e educa\u00e7\u00e3o em Portugu\u00eas"));
+    public void jsonServedAsTextIsNotIndexed() throws Exception {
+        String api = "{\"user_sync\":true,\"items\":[{\"id\":1,\"name\":\"Informa\u00e7\u00e3o p\u00fablica\"},{\"id\":2}],\"ok\":null}";
+        assertEquals(0, indexedDocuments(api.getBytes("UTF-8"), "text/html"));
+        assertEquals(0, indexedDocuments(("\ufeff  " + api + "\n").getBytes("UTF-8"), "text/plain"));
+        assertEquals(0, indexedDocuments("[\"SUCCESS\",[[\"banaiy\",[\"a\",\"b\"]]]]".getBytes("UTF-8"), "text/html"));
+        assertEquals(0, indexedDocuments(("openAireWidgetCallback(" + api + ");").getBytes("UTF-8"), "text/plain"));
     }
 
     @Test
-    public void latin1FeedWithoutDeclarationUsesHttpCharset() throws Exception {
-        byte[] body = rss("", XML_PT, StandardCharsets.ISO_8859_1);
-        String text = parse(body, "application/rss+xml", "iso-8859-1");
-        assertTrue(text, text.contains("Portugu\u00eas"));
+    public void textThatLooksLikeJsonAtTheEndsIsStillText() throws Exception {
+        String lyrics = "[Refr\u00e3o] Informa\u00e7\u00e3o sobre a administra\u00e7\u00e3o p\u00fablica e o cora\u00e7\u00e3o da cidade de S\u00e3o Jo\u00e3o, que \u00e9 bela. [Fim]";
+        assertFalse(ContentSniffer.isJsonData(lyrics.getBytes("UTF-8")));
+        assertFalse(ContentSniffer.isJsonData("{ not json at all }".getBytes("UTF-8")));
+        assertFalse(ContentSniffer.isJsonData("<html><body>{\"a\":1}</body></html>".getBytes("UTF-8")));
+        assertFalse(ContentSniffer.isJsonData("function f() { return [1]; }".getBytes("UTF-8")));
+        assertTrue(ContentSniffer.isJsonData("{\"a\":[1,2,{\"b\":\"c\"}]}".getBytes("UTF-8")));
+        assertTrue(ContentSniffer.isJsonData(" [ ] ".getBytes("UTF-8")));
     }
 
     @Test
-    public void utf16FeedWithBomIsTranscoded() throws Exception {
-        byte[] body = rss("<?xml version=\"1.0\" encoding=\"UTF-16\"?>", XML_PT, Charset.forName("UTF-16"));
-        String text = parse(body, "application/xml", null);
-        assertTrue(text, text.contains("Portugu\u00eas"));
+    public void jsonTypesAreRecognised() {
+        assertTrue(DocumentInformationExtractor.isJsonMime("application/json"));
+        assertTrue(DocumentInformationExtractor.isJsonMime("application/json; charset=utf-8"));
+        assertTrue(DocumentInformationExtractor.isJsonMime("application/ld+json"));
+        assertTrue(DocumentInformationExtractor.isJsonMime("application/manifest+json"));
+        assertFalse(DocumentInformationExtractor.isJsonMime("text/html"));
+        assertFalse(DocumentInformationExtractor.isJsonMime("application/javascript"));
+        assertFalse(DocumentInformationExtractor.isJsonMime(null));
+    }
+
+    @Test
+    public void xmlDataIsRecognisedButXhtmlAndOfficeFilesAreNot() {
+        assertTrue(DocumentInformationExtractor.isXmlData("text/xml"));
+        assertTrue(DocumentInformationExtractor.isXmlData("application/xml; charset=utf-8"));
+        assertTrue(DocumentInformationExtractor.isXmlData("application/rss+xml"));
+        assertTrue(DocumentInformationExtractor.isXmlData("application/atom+xml"));
+        assertTrue(DocumentInformationExtractor.isXmlData("application/rdf+xml"));
+        assertFalse(DocumentInformationExtractor.isXmlData("application/xhtml+xml"));
+        assertFalse(DocumentInformationExtractor.isXmlData("text/html"));
+        assertFalse(DocumentInformationExtractor.isXmlData("application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+        assertFalse(DocumentInformationExtractor.isXmlData("application/pdf"));
+        assertFalse(DocumentInformationExtractor.isXmlData(null));
     }
 
     @Test
@@ -767,6 +793,74 @@ public class TextEncodingTest {
         assertEquals("x-MacRoman", r.charset.name());
     }
 
+    /** DOS Portuguese with no byte windows-1252 leaves undefined (spec.zip README): it reads as "C\u00a0 est\u201eo" in windows-1252. */
+    @Test
+    public void dosPortugueseWithoutUndefinedBytesIsStillRecognised() throws Exception {
+        String text = repeat("<p>C\u00e1 est\u00e1 o t\u00e3o esperado conversor para o Spectrum, n\u00e3o h\u00e1 a\u00e7\u00e3o nem op\u00e7\u00e3o. A administra\u00e7\u00e3o p\u00fablica \u00e9 \u00fatil.</p>\n", 4);
+        byte[] b = html(text, null, Charset.forName("IBM860"));
+        for (byte x : b)
+            assertFalse("test text must avoid undefined bytes", (x & 0xFF) == 0x81 || (x & 0xFF) == 0x8D || (x & 0xFF) == 0x8F || (x & 0xFF) == 0x90 || (x & 0xFF) == 0x9D);
+        assertEquals("IBM860", TextEncodingDetector.resolve(b, "iso-8859-1").charset.name());
+        String out = parse(b, "text/html", "iso-8859-1");
+        assertTrue(out, out.contains("est\u00e1 o t\u00e3o"));
+    }
+
+    /** CP850 reads CP860's "\u00e3" (0x84) as "\u00e4": Portuguese text must not end up as "alterac\u00e7\u00e4o". */
+    @Test
+    public void cp860WinsOverCp850WhenOnlyTheTildesDiffer() throws Exception {
+        String text = repeat("<p>/IFn altera\u00e7\u00e3o do valor de IFF2 e est\u00e3o guardados no cabe\u00e7alho. \u00c9 um ficheiro.</p>\n", 4);
+        byte[] b = html(text, null, Charset.forName("IBM860"));
+        assertEquals("IBM860", TextEncodingDetector.resolve(b, null).charset.name());
+    }
+
+    @Test
+    public void latin1PageWithManySymbolsIsNotTakenForAnOldCodePage() throws Exception {
+        String text = repeat("<p>\u00a9 2020 \u00ae \u2022 Pre\u00e7o: \u00a312\u00b750 \u00b1 5% \u00bd \u00b2 \u00b0C \u00a7 3 \u00bb Pol\u00edtica de privacidade \u00ab</p>\n", 6);
+        byte[] b = html(text, null, Charset.forName("windows-1252"));
+        String name = TextEncodingDetector.resolve(b, "iso-8859-1").charset.name();
+        assertFalse(name, name.equals("IBM850") || name.equals("IBM860") || name.equals("x-MacRoman"));
+    }
+
+    // pages found by the v13 run whose windows-1252 reading was wrongly given up for DOS or Mac code pages
+
+    @Test
+    public void germanPageWithRegisteredTrademarksStaysLatin1() throws Exception {
+        String text = repeat("<p>BABY born\u00ae ist die kleine Schwester, M\u00e4dchen, Lieferl\u00e4nder D\u00e4nemark, Gro\u00dfbritannien, f\u00fcr \u00d6sterreich \u00dcbersicht.</p>\n", 4);
+        byte[] b = html(text, null, Charset.forName("windows-1252"));
+        assertEquals("windows-1252", TextEncodingDetector.resolve(b, "iso-8859-1").charset.name());
+    }
+
+    @Test
+    public void passwordMaskOfRepeatedLettersIsNoEvidence() throws Exception {
+        String text = "<input value=\"\u00e4\u00e4\u00e4\u00e4\u00e4\u00e4\u00e4\u00e4\"> <p>Wir zocken da \u00f6ffters, der \u00fcbrigends ETW-FZ Fl\u00fcge.</p>" + repeat("<p>Hallo zusammen.</p>", 20);
+        byte[] b = html(text, null, Charset.forName("windows-1252"));
+        assertEquals("windows-1252", TextEncodingDetector.resolve(b, "iso-8859-1").charset.name());
+    }
+
+    @Test
+    public void macQuotationMarksAloneAreNotEnoughToChooseADosCodePage() throws Exception {
+        byte[] b = concat("<html><body><p>Demonstration of Interactor".getBytes(), new byte[] {(byte) 0x81},
+                " for Yamaha. ".getBytes(), new byte[] {(byte) 0xD2}, "one".getBytes(), new byte[] {(byte) 0xD3, ' ', (byte) 0xD2}, "two".getBytes(),
+                new byte[] {(byte) 0xD3, ' ', (byte) 0xD2}, "three".getBytes(), new byte[] {(byte) 0xD3, ' ', (byte) 0xD2}, "four".getBytes(),
+                new byte[] {(byte) 0xD3}, "</p></body></html>".getBytes());
+        String name = TextEncodingDetector.resolve(b, null).charset.name();
+        assertFalse(name, name.equals("IBM850") || name.equals("IBM860"));
+    }
+
+    @Test
+    public void dutchCp850StillReadsAsCp850() throws Exception {
+        String text = repeat("<p>Barbara Elisa de Bu\u00e9, geboren te Antwerpen, Belgi\u00eb op 25 augustus 1870, ge\u00ebcht met Danie\u00ebl, de Belgi\u00eb\u00ebr.</p>\n", 5);
+        byte[] b = html(text, null, Charset.forName("IBM850"));
+        assertEquals("IBM850", TextEncodingDetector.resolve(b, null).charset.name());
+    }
+
+    @Test
+    public void macApostropheIsNotReadAsDotlessI() throws Exception {
+        String text = repeat("<p>Dead players don\u2019t continue to use up oxygen, it\u2019s the rule, we\u2019re told; they\u2019ll see.</p>\n", 6);
+        byte[] b = html(text, null, Charset.forName("x-MacRoman"));
+        assertEquals("x-MacRoman", TextEncodingDetector.resolve(b, null).charset.name());
+    }
+
     @Test
     public void shiftJisPageDeclaredLatin1IsNotReadAsOldCodePage() throws Exception {
         byte[] b = html("<p>Home page </p>" + repeat(JA, 2), null, Charset.forName("windows-31j"));
@@ -778,7 +872,7 @@ public class TextEncodingTest {
     public void plausibilityPrefersRealProseOverNoise() {
         assertTrue(TextEncodingDetector.plausibility("a\u00e7\u00e3o, informa\u00e7\u00f5es, \u00c9 um ficheiro") > 0.9);
         assertTrue(TextEncodingDetector.plausibility("\u00ecSomething has to be wrong,\u00ee Evan said") < 0.5);
-        assertTrue(TextEncodingDetector.plausibility("\u2534\u00fc\u00df\u00f7\u00a7\u00b6\u2591") < 0.5);
+        assertTrue(TextEncodingDetector.plausibility("\u00a4\u00a6\u00a8\u00ac\u00af\u00b4\u00b8\u00ad") < 0.5);
     }
 
     /** All-caps looking noise made of a single 0x8F byte between capitals (a forum page, ugbase.eu) is not a code page. */
@@ -1036,6 +1130,193 @@ public class TextEncodingTest {
         assertFalse(DocumentInformationExtractor.isCodeFile("http://example.com/doc.rst", "text/plain"));
         assertFalse(DocumentInformationExtractor.isCodeFile("http://example.com/paper.tex", "text/plain"));
         assertFalse(DocumentInformationExtractor.isCodeFile("http://example.com/page.xhtml", "application/xhtml+xml"));
+    }
+
+    // ---- restoring U+FFFD in Portuguese words ----
+
+    private static final FffdRestorer MINI = FffdRestorer.fromLines(java.util.Arrays.asList(
+            "N\t1000000", "W\tpar\u00f3quia\t50", "W\tinforma\u00e7\u00e3o\t5000", "W\tinforma\u00e7o\t3", "W\tprevis\u00f5es\t100",
+            "W\tinterven\u00e7\u00e3o\t200", "W\tn\u00e3o\t9000", "W\tn\u00e2o\t40", "W\ts\u00e3o\t3000", "W\tp\u00e1s\t30", "W\tp\u00e9s\t300",
+            "W\tp\u00f3s\t200", "W\tvoc\u00ea\t4000", "W\test\u00e1\t8000", "W\test\u00e9\t300", "W\tm\u00f3nica\t100", "W\tm\u00f4nica\t300",
+            "W\t\u00e7\u00f5es\t10",
+            "U\tpara\t10000", "U\tescavar\t50", "U\tusar\t500", "U\tincapacitado\t60", "U\tcasa\t900",
+            "B\tusar\tp\u00e1s\t20", "B\tp\u00e1s\tpara\t40", "B\tp\u00e9s\tpara\t4", "B\tp\u00f3s\tpara\t2",
+            "B\tvoc\u00ea\test\u00e1\t300", "B\test\u00e1\tincapacitado\t10",
+            "W\t\u00e9\t50000", "W\t\u00e0\t8000", "W\t\u00f3\t300", "W\t\u00f4\t60", "W\tigni\u00e7\u00e3o\t200", "W\tigni\u00e7\u00f5es\t5",
+            "W\tdire\u00e7\u00e3o\t400", "W\tdire\u00e7\u00f5es\t90",
+            "U\tprimeira\t900", "U\tassinada\t300", "U\tfui\t700", "U\tpraia\t500", "U\tclassificados\t20", "U\tjaneladedias\t3",
+            "B\tprimeira\t\u00e9\t40", "B\t\u00e9\tassinada\t30", "B\tfui\t\u00e0\t60", "B\t\u00e0\tpraia\t50",
+            "W\ta\u00e7\u00e3o\t1800", "W\ta\u00e7o\t500", "W\tav\u00f4\t200", "W\tav\u00f3\t300", "W\tingl\u00eas\t900", "W\tingl\u00e9s\t40"));
+
+    private static String restore(String text) {
+        return MINI.restore(text, MINI.isBrazilian(text)).text;
+    }
+
+    @Test
+    public void damagedWordWithOneReadingIsRestored() {
+        assertEquals("A Par\u00f3quia de Nossa Senhora", restore("A Par\ufffdquia de Nossa Senhora"));
+        assertEquals("o Par\u00f3quia", restore("o Par\ufffdquia"));
+    }
+
+    @Test
+    public void twoReplacementCharactersAreOneOrTwoLetters() {
+        assertEquals("previs\u00f5es", restore("previs\ufffd\ufffdes"));
+        assertEquals("interven\u00e7\u00e3o", restore("interven\ufffd\ufffdo"));
+        assertEquals("interven\u00e7\u00e3o", restore("interven\ufffd\ufffd\ufffd\ufffdo"));
+        assertEquals("informa\u00e7\u00e3o", restore("informa\ufffd\ufffdo"));
+        assertEquals("informa\u00e7\u00e3o", restore("informa\ufffd\ufffd\ufffd\ufffdo"));
+    }
+
+    @Test
+    public void rareReadingsAreIgnored() {
+        assertEquals("n\u00e3o", restore("n\ufffdo"));
+    }
+
+    @Test
+    public void caseOfTheKnownLettersIsKept() {
+        assertEquals("INFORMA\u00c7\u00c3O", restore("INFORMA\ufffd\ufffdO"));
+        assertEquals("S\u00c3O", restore("S\ufffdO"));
+        assertEquals("S\u00e3o", restore("S\ufffdo"));
+    }
+
+    @Test
+    public void ambiguousWordNeedsContext() {
+        assertEquals("p\ufffds", restore("p\ufffds"));
+        assertEquals("usar p\u00e1s para escavar", restore("usar p\ufffds para escavar"));
+    }
+
+    @Test
+    public void neighbourRestoredFirstServesAsContext() {
+        assertEquals("voc\u00ea est\u00e1 incapacitado", restore("voc\ufffd est\ufffd incapacitado"));
+    }
+
+    @Test
+    public void portugalSpellingWinsUnlessThePageUsesBrazil() {
+        assertEquals("Ol\u00e1, m\u00f3nica", restore("Ol\u00e1, m\ufffdnica"));
+        assertEquals("m\u00f4nica m\u00f4nica m\u00f4nica casa m\u00f4nica", restore("m\u00f4nica m\u00f4nica m\u00f4nica casa m\ufffdnica"));
+    }
+
+    @Test
+    public void loneReplacementCharacterIsEOrAWhenTheNeighboursVouchForIt() {
+        assertEquals("A primeira \u00e9 assinada", restore("A primeira \ufffd assinada"));
+        assertEquals("fui \u00e0 praia", restore("fui \ufffd praia"));
+        String separator = "Classificados \ufffd Janela dos Dias";
+        assertEquals(separator, restore(separator));
+    }
+
+    @Test
+    public void loneLetterAsTwoReplacementCharactersAndAtTheStartOfASentence() {
+        assertEquals("A primeira \u00e9 assinada", restore("A primeira \ufffd\ufffd assinada"));
+        assertEquals("Foi bom. \u00c9 assinada", restore("Foi bom. \ufffd assinada"));
+        assertEquals("Ontem. \u00c0 praia", restore("Ontem. \ufffd\ufffd praia"));
+    }
+
+    @Test
+    public void wordsAlmostAlwaysCapitalisedGetTheirCapital() {
+        FffdRestorer r = FffdRestorer.getInstance();
+        assertNotNull(r);
+        assertEquals("a \u00c1frica do Sul e \u00c9vora", r.restore("a \ufffdfrica do Sul e \ufffdvora", false).text);
+        assertEquals("o Alentejo e a \u00e1gua", r.restore("o Alentejo e a \ufffdgua", false).text);
+    }
+
+    @Test
+    public void loneLetterUsesTheWordOnTheOtherSideWhenOnePrecededByPunctuation() {
+        assertEquals("Primeira, \u00e9 assinada", restore("Primeira, \ufffd assinada"));
+        assertEquals("\u201cprimeira\u201d \u00e9 assinada", restore("\u201cprimeira\u201d \ufffd assinada"));
+        assertEquals("a primeira \u00e9 (assinada)", restore("a primeira \ufffd (assinada)"));
+        String alone = "Vacinas \ufffd 0800 211 311";
+        assertEquals(alone, restore(alone));
+        String nothingAround = "\ufffd";
+        assertEquals(nothingAround, restore(nothingAround));
+    }
+
+    @Test
+    public void damageStyleOfThePageDecidesWhetherTwoReplacementCharactersAreOneLetter() {
+        // one U+FFFD per letter (Latin-1 bytes): "a��o" is a\u00e7\u00e3o, never a\u00e7o
+        assertEquals("n\u00e3o a\u00e7\u00e3o n\u00e3o s\u00e3o", restore("n\ufffdo a\ufffd\ufffdo n\ufffdo s\ufffdo"));
+        // two per letter (UTF-8 bytes): every pair is one letter
+        assertEquals("n\u00e3o a\u00e7o n\u00e3o s\u00e3o", restore("n\ufffd\ufffdo a\ufffd\ufffdo n\ufffd\ufffdo s\ufffd\ufffdo"));
+    }
+
+    @Test
+    public void wordsThatDifferByAnAccentAreNotSpellingVariants() {
+        // avô/avó, inglês/inglés are different words, not Brazilian and European spellings: frequency decides, or nothing does
+        assertEquals("av\ufffd", restore("av\ufffd"));
+        assertEquals("ingl\u00eas", restore("ingl\ufffds"));
+    }
+
+    @Test
+    public void ordinalIndicatorsAfterDigitsAndNumeroSign() {
+        assertEquals("Naval 1\u00ba de Maio", restore("Naval 1\ufffd de Maio"));
+        assertEquals("artigo 21\u00ba do Decreto", restore("artigo 21\ufffd do Decreto"));
+        assertEquals("a 1\u00aa p\u00e1gina", restore("a 1\ufffd p\u00e1gina"));
+        assertEquals("Decreto-Lei n\u00ba 27/2008", restore("Decreto-Lei n\ufffd 27/2008"));
+        assertEquals("N\u00ba 5", restore("N\ufffd 5"));
+    }
+
+    @Test
+    public void apostrophesInsideEnglishWordsAndQuotationMarks() {
+        assertEquals("Nigella Lawson\u2019s site, don\u2019t, it\u2019s", restore("Nigella Lawson\ufffds site, don\ufffdt, it\ufffds"));
+        assertEquals("Jornal \u201cAvante!\u201d e o livro \u201cCastro Laboreiro, entre brandas\u201d.",
+                restore("Jornal \ufffdAvante!\ufffd e o livro \ufffdCastro Laboreiro, entre brandas\ufffd."));
+        String unpaired = "so um \ufffdAvante e nada mais";
+        assertEquals(unpaired, restore(unpaired));
+    }
+
+    @Test
+    public void wordsCutByTheSiteAreCompletedOnlyWhenOneWordClearlyFits() {
+        assertEquals("Trava de igni\u00e7\u00e3o (96)", restore("Trava de igni\u00e7\ufffd (96)"));
+        String ambiguous = "Caule de dire\u00e7\ufffd (221)";
+        assertEquals(ambiguous, restore(ambiguous));
+        String untouched = "Caixa el\u00e9trica de inje\u00e7";
+        assertEquals(untouched, restore(untouched));
+    }
+
+    @Test
+    public void whatIsNotAWordOfTheVocabularyIsLeftAlone() {
+        String s = "\ufffd \u2022 zzz\ufffdzzz \ufffd\ufffd\ufffd\ufffd\ufffd\ufffd \u041f\ufffd\u0442";
+        assertEquals(s, restore(s));
+        String clean = "Nada a restaurar aqui.";
+        assertTrue(MINI.restore(clean, false).text == clean);
+    }
+
+    @Test
+    public void modelInTheJarRestoresCommonWords() {
+        FffdRestorer r = FffdRestorer.getInstance();
+        assertNotNull("model pt-fffd-model.tsv.gz missing from the jar", r);
+        String out = r.restore("A administra\ufffd\ufffdo p\ufffdblica e a informa\ufffd\ufffdo sobre os A\ufffdores", false).text;
+        assertEquals("A administra\u00e7\u00e3o p\u00fablica e a informa\u00e7\u00e3o sobre os A\u00e7ores", out);
+    }
+
+    @Test
+    public void portuguesePageWithReplacementCharactersIsRestoredAndKeptOutOfTheDataset() throws Exception {
+        String sentence = "A administra\ufffd\ufffdo p\ufffdblica portuguesa publicou hoje o relat\u00f3rio sobre a educa\u00e7\u00e3o e a sa\u00fade das crian\u00e7as. ";
+        byte[] b = ("<html><head><title>Not\u00edcias</title></head><body><p>" + repeat(sentence, 6) + "</p></body></html>").getBytes("UTF-8");
+        DocumentInformationExtractor extractor = new DocumentInformationExtractor("test");
+        java.io.StringWriter dataset = new java.io.StringWriter();
+        extractor.setCharsetDataset(dataset, 100);
+        extractor.parseTextRecord(new ByteArrayInputStream(b), "text/html", "x.warc.gz", "http://example.pt/a", "20240101000000", 0, 200, "iso-8859-1");
+        String text = String.join(" ", extractor.getEntries().values().iterator().next().getContent());
+        assertTrue(text, text.contains("administra\u00e7\u00e3o p\u00fablica portuguesa"));
+        assertFalse(text, text.contains("\ufffd"));
+        assertEquals("", dataset.toString());
+    }
+
+    @Test
+    public void asciiArtDoesNotCountAgainstACodePage() {
+        assertEquals(TextEncodingDetector.plausibility("a\u00e7\u00e3o de informa\u00e7\u00e3o"),
+                TextEncodingDetector.plausibility("\u2588\u2580\u2580\u2580 \u250c\u2500\u2500\u2510 a\u00e7\u00e3o de informa\u00e7\u00e3o \u2514\u2500\u2518"), 0.0001);
+    }
+
+    @Test
+    public void pagesWithoutHttpCharsetAreAlwaysInTheDataset() throws Exception {
+        byte[] page = html(repeat(PT, 5), "utf-8", StandardCharsets.UTF_8);
+        java.util.List<String[]> rows = datasetRows(page, "text/html", null, 0);
+        assertEquals(1, rows.size());
+        assertEquals("1", rows.get(0)[AGREES]);
+        assertEquals("", rows.get(0)[HTTP]);
+        assertEquals("utf-8", rows.get(0)[META]);
+        assertEquals(0, datasetRows(page, "text/html", "utf-8", 0).size());
     }
 
     @Test

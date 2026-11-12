@@ -36,6 +36,58 @@ public final class ContentSniffer {
         return Kind.NONE;
     }
 
+    private static final java.util.regex.Pattern JSONP_START = java.util.regex.Pattern.compile("^[A-Za-z_$][\\w$.]*\\(\\s*[\\[{]");
+
+    /**
+     * True if the whole payload is one JSON value (an API response, a manifest, a tracker call), or one wrapped in a call
+     * (JSONP). That is data for programs, not text for people. The ends are checked first, so ordinary text never reaches
+     * the parser; a text that merely starts with "[" and ends with "]" ("[Refr\u00e3o] ... [Fim]") fails the parse.
+     */
+    public static boolean isJsonData(byte[] data) {
+        if (data == null || data.length < 2)
+            return false;
+        int start = 0, end = data.length;
+        if (data.length >= 3 && (data[0] & 0xFF) == 0xEF && (data[1] & 0xFF) == 0xBB && (data[2] & 0xFF) == 0xBF)
+            start = 3;
+        while (start < end && isSpace(data[start]))
+            start++;
+        while (end > start && isSpace(data[end - 1]))
+            end--;
+        if (end - start < 2)
+            return false;
+        int first = data[start] & 0xFF;
+        int last = data[end - 1] & 0xFF;
+        if ((first == '{' && last == '}') || (first == '[' && last == ']'))
+            return parses(data, start, end);
+        if (first >= 0x80 || !(Character.isLetter(first) || first == '_' || first == '$'))
+            return false;
+        // JSONP: name({...}) or name([...]) with an optional semicolon
+        if (last == ';' && end - start > 3 && (data[end - 2] & 0xFF) == ')')
+            end--;
+        if ((data[end - 1] & 0xFF) != ')')
+            return false;
+        String head = new String(data, start, Math.min(end - start, 120), java.nio.charset.StandardCharsets.ISO_8859_1);
+        java.util.regex.Matcher m = JSONP_START.matcher(head);
+        if (!m.find())
+            return false;
+        int open = start + m.end() - 1;
+        return parses(data, open, end - 1);
+    }
+
+    private static boolean isSpace(byte b) {
+        return b == ' ' || b == '\t' || b == '\n' || b == '\r';
+    }
+
+    private static boolean parses(byte[] data, int from, int to) {
+        try (com.google.gson.stream.JsonReader reader = new com.google.gson.stream.JsonReader(new java.io.InputStreamReader(
+                new java.io.ByteArrayInputStream(data, from, to - from), java.nio.charset.StandardCharsets.UTF_8))) {
+            reader.skipValue();
+            return reader.peek() == com.google.gson.stream.JsonToken.END_DOCUMENT;
+        } catch (java.io.IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
     private static boolean isBzip2(byte[] d) {
         return d.length > 9 && d[0] == 'B' && d[1] == 'Z' && d[2] == 'h' && d[3] >= '1' && d[3] <= '9' && (d[4] & 0xff) == 0x31
                 && (d[5] & 0xff) == 0x41 && (d[6] & 0xff) == 0x59;

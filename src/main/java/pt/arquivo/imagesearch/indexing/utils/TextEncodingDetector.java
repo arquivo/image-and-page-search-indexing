@@ -138,9 +138,9 @@ public class TextEncodingDetector implements EncodingDetector {
                 return new Resolution(cjk, Reason.STATISTICAL);
         }
 
-        // Bytes windows-1252 leaves undefined cannot be Latin text: old Mac / DOS code pages are the usual cause
+        // Text that reads badly as windows-1252 (bytes it leaves undefined, accents where symbols stand) may be an old Mac / DOS code page
         if (!looksWide && (http == null || isLatinDeclaration(http)) && (meta == null || isLatinDeclaration(meta))
-                && multibyte == 0 && hasCp1252UndefinedByte(data)) {
+                && multibyte == 0) {
             Charset legacy = legacyCodePage(sample);
             if (legacy != null)
                 return new Resolution(legacy, Reason.STATISTICAL);
@@ -197,11 +197,12 @@ public class TextEncodingDetector implements EncodingDetector {
 
     private static final Charset[] LEGACY_CODE_PAGES = {Charset.forName("x-MacRoman"), Charset.forName("IBM850"), Charset.forName("IBM860")};
     private static final int LEGACY_MIN_HIGH_BYTES = 6;
+    private static final int LEGACY_MIN_SCORED = 6;
     /** Text has next to no NULs; an Office document served as text has a third of its bytes NUL and must not be edited. */
     private static final double MAX_NUL_RATIO_FOR_TEXT_REPAIR = 0.01;
     private static final double LEGACY_MIN_SCORE = 0.85;
     private static final double LEGACY_MIN_MARGIN = 0.3;
-    private static final String TYPOGRAPHIC = "\u2018\u2019\u201C\u201D\u2013\u2014\u2026\u2022\u00AB\u00BB\u00BF\u00A1\u20AC\u00A0";
+    private static final String TYPOGRAPHIC = "\u2018\u2019\u201C\u201D\u2013\u2014\u2026\u2022\u00AB\u00BB\u00BF\u00A1\u20AC\u00A0\u00A9\u00AE\u00B0\u00B1\u00B2\u00B3\u00B5\u00B7\u00BC\u00BD\u00BE\u00A7\u00B6\u00D7\u00F7\u2122";
 
     private static boolean isCp1252Undefined(int v) {
         return v == 0x81 || v == 0x8D || v == 0x8F || v == 0x90 || v == 0x9D;
@@ -229,23 +230,41 @@ public class TextEncodingDetector implements EncodingDetector {
         if (high < LEGACY_MIN_HIGH_BYTES)
             return null;
         double base = plausibility(new String(sample, WINDOWS_1252));
-        Charset best = null;
+        // the best a legacy page can score is 1, so a windows-1252 reading above this can never lose by the required margin
+        if (base > 1 - LEGACY_MIN_MARGIN)
+            return null;
+        // A code page must read well on its own terms (neutral weights, so German or Dutch text is not held against it) and
+        // on enough letters; among the ones that do, Portuguese weights pick the code page (CP860 over CP850 for "estão")
+        Charset best = null, runnerUp = null;
         double bestScore = 0, second = 0;
         for (Charset c : LEGACY_CODE_PAGES) {
-            double s = plausibility(new String(sample, c));
-            if (s > bestScore) {
+            String decoded = new String(sample, c);
+            double[] own = evaluate(decoded, false);
+            double s = own[1] == 0 ? 0 : own[0] / own[1];
+            boolean eligible = s >= LEGACY_MIN_SCORE && s - base >= LEGACY_MIN_MARGIN && own[1] >= LEGACY_MIN_SCORED
+                    && lowercaseShare(decoded) >= 0.5;
+            if (!eligible)
+                continue;
+            double[] pt = evaluate(decoded, true);
+            double ranked = pt[1] == 0 ? 0 : pt[0] / pt[1];
+            if (ranked > bestScore) {
                 second = bestScore;
+                runnerUp = best;
                 best = c;
-                bestScore = s;
-            } else if (s > second) {
-                second = s;
+                bestScore = ranked;
+            } else if (ranked > second) {
+                second = ranked;
+                runnerUp = c;
             }
         }
-        return best != null && bestScore >= LEGACY_MIN_SCORE && bestScore - base >= LEGACY_MIN_MARGIN
-                && bestScore - second >= 0.05 && lowercaseShare(new String(sample, best)) >= 0.5 ? best : null;
+        if (best == null)
+            return null;
+        // CP850 and CP860 differ only in a few letters; when the text uses none of them they read the same, and CP850 comes first
+        boolean siblings = runnerUp != null && best.name().equals("IBM850") && runnerUp.name().equals("IBM860");
+        return bestScore - second >= 0.05 || siblings ? best : null;
     }
 
-    /** Share of the non-ASCII letters that are lowercase or the sentence-initial É/À; prose has mostly those, noise has other capitals. */
+    /** Share of the non-ASCII letters that are lowercase or the sentence-initial É/À; prose has mostly those, noise has other capitals (no letters at all: nothing against it). */
     private static double lowercaseShare(String text) {
         int letters = 0, lower = 0;
         for (int i = 0; i < text.length(); i++) {
@@ -256,7 +275,7 @@ public class TextEncodingDetector implements EncodingDetector {
             if (Character.isLowerCase(ch) || ch == '\u00C9' || ch == '\u00C0')
                 lower++;
         }
-        return letters == 0 ? 0 : (double) lower / letters;
+        return letters == 0 ? 1 : (double) lower / letters;
     }
 
     /**
@@ -266,25 +285,36 @@ public class TextEncodingDetector implements EncodingDetector {
      * other symbols and U+FFFD.
      */
     public static double plausibility(String text) {
+        double[] e = evaluate(text, false);
+        return e[1] == 0 ? 0 : e[0] / e[1];
+    }
+
+    /**
+     * {plausible characters (weighted), characters scored}. A run of the same character counts once (a "\u00e4\u00e4\u00e4\u00e4" password
+     * mask is no evidence), and ASCII art (box-drawing and block characters, which DOS code pages put in 0xB0-0xDF) counts for nothing.
+     * With Portuguese weights the letters foreign to Portuguese weigh half, which is how CP860 and CP850 are told apart.
+     */
+    private static double[] evaluate(String text, boolean portuguese) {
         int total = 0;
         double good = 0;
         int n = text.length();
         for (int i = 0; i < n; i++) {
             char ch = text.charAt(i);
-            if (ch < 0x80)
+            if (ch < 0x80 || (ch >= 0x2500 && ch <= 0x259F) || (i > 0 && ch == text.charAt(i - 1)))
                 continue;
             total++;
             char prev = i > 0 ? text.charAt(i - 1) : ' ';
             char next = i + 1 < n ? text.charAt(i + 1) : ' ';
-            good += plausible(ch, prev, next);
+            good += plausible(ch, prev, next, portuguese);
         }
-        return total == 0 ? 0 : good / total;
+        return new double[] {good, total};
     }
 
-    /** Letters that appear in Portuguese, Spanish, French, German and Dutch text far less than the common accents (ã é ç ó ...). */
+    /** Letters that appear in Portuguese text far less than its common accents (ã é ç ó ...); ä ö ë are German/Dutch, and tell CP860 from CP850 ("estão" is "estäo" in CP850). */
     private static final String UNCOMMON_LETTERS = "\u00EC\u00EF\u00F2\u00F9\u00FB\u00EE\u00FF\u00F0\u00FE\u00F8\u00E6\u0153";
+    private static final String GERMAN_DUTCH_LETTERS = "\u00E4\u00F6\u00EB";
 
-    private static double plausible(char ch, char prev, char next) {
+    private static double plausible(char ch, char prev, char next, boolean portuguese) {
         if (!Character.isLetter(ch))
             return TYPOGRAPHIC.indexOf(ch) >= 0 ? 1 : 0;
         Character.UnicodeBlock block = Character.UnicodeBlock.of(ch);
@@ -300,7 +330,8 @@ public class TextEncodingDetector implements EncodingDetector {
                 fits = Character.isLowerCase(next);
             else
                 fits = "\u00E9\u00E0\u00F3\u00F4".indexOf(ch) >= 0;
-            return !fits ? 0 : UNCOMMON_LETTERS.indexOf(ch) >= 0 ? 0.5 : 1;
+            boolean uncommon = UNCOMMON_LETTERS.indexOf(ch) >= 0 || (portuguese && (GERMAN_DUTCH_LETTERS.indexOf(ch) >= 0 || ch >= 0x100));
+            return !fits ? 0 : uncommon ? 0.5 : 1;
         }
         if (Character.isUpperCase(ch)) {
             if (pl && Character.isLowerCase(prev))
