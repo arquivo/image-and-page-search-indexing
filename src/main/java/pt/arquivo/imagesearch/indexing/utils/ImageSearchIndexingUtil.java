@@ -168,34 +168,34 @@ public class ImageSearchIndexingUtil {
         reader.setStrict(true);
         Iterator<ArchiveRecord> ii = reader.iterator();
 
+        // A record that cannot be parsed or consumed is skipped. If the stream itself breaks (truncated gzip, bad record
+        // header) the records already read are kept and the rest of this file is given up, so the file does not abort its batch.
         try {
             while (ii.hasNext()) {
-                WARCRecord warcRecord;
+                WARCRecord warcRecord = (WARCRecord) ii.next();
                 try {
-                    warcRecord = (WARCRecord) ii.next();
                     WARCRecordResponseEncapsulated record = parseWarcRecord(warcRecord, context);
                     records++;
                     if (record != null)
                         consumer.accept(record);
                 } catch (RuntimeException re) {
-                    context.getCounter(ImageIndexerWithDupsJob.IMAGE_COUNTERS.RECORD_NEXT_FAILED).increment(1);
+                    context.getCounter(ImageIndexerWithDupsJob.IMAGE_COUNTERS.RECORDS_FAILED).increment(1);
                     errors++;
-                    logger.error("Exception reading next WARC record", re);
-                    throw re;
+                    logger.error("Exception reading WARC record, skipping it, WARCNAME: " + warcURL, re);
                 }
             }
         } catch (RuntimeException e) {
+            context.getCounter(ImageIndexerWithDupsJob.IMAGE_COUNTERS.RECORD_NEXT_FAILED).increment(1);
             context.getCounter(ImageIndexerWithDupsJob.IMAGE_COUNTERS.WARCS_FAILED_STREAM).increment(1);
             FileUtils.deleteQuietly(new File(warcURL));
-            logger.error("Exception reading WARC bytes, WARCNAME: " + warcURL + " " + e.getMessage());
-            throw e;
+            logger.error("Exception reading WARC bytes after " + records + " records, rest of the file skipped, WARCNAME: " + warcURL + " " + e.getMessage());
         }
 
         logger.info("WARCS RECORDS READ: " + records + " ERRORS: " + errors);
         if (reader != null) {
             try {
                 reader.close();
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
                 logger.debug("error closing ArchiveReader" + e.getMessage());
             }
         }

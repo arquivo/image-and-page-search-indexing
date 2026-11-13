@@ -578,6 +578,35 @@ public class TextEncodingTest {
         }
     }
 
+    @Test
+    public void truncatedWarcKeepsTheRecordsBeforeTheBreakAndDoesNotThrow() throws Exception {
+        ByteArrayOutputStream warc = new ByteArrayOutputStream();
+        for (int i = 1; i <= 3; i++) {
+            byte[] body = html(PT + i + repeat(PT, 20 * i), null, StandardCharsets.UTF_8);
+            ByteArrayOutputStream http = new ByteArrayOutputStream();
+            http.write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + body.length
+                    + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+            http.write(body);
+            ByteArrayOutputStream record = new ByteArrayOutputStream();
+            writeWarcResponse(record, "1.0", "application/http; msgtype=response", "http://a.example/" + i, http.toByteArray());
+            // one gzip member per record, as in a .warc.gz
+            try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(warc)) {
+                gz.write(record.toByteArray());
+            }
+        }
+        byte[] all = warc.toByteArray();
+        java.io.File f = java.io.File.createTempFile("truncated", ".warc.gz");
+        try {
+            // cut the third member in the middle
+            org.apache.commons.io.FileUtils.writeByteArrayToFile(f, java.util.Arrays.copyOf(all, all.length - 60));
+            DocumentInformationExtractor extractor = new DocumentInformationExtractor("test");
+            extractor.parseRecord("truncated.warc.gz", f.getPath());
+            assertEquals(2, extractor.getEntries().size());
+        } finally {
+            f.delete();
+        }
+    }
+
     // ---- control characters ----
 
     @Test
