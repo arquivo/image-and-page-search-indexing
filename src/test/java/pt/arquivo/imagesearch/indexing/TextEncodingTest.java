@@ -21,6 +21,8 @@ import org.junit.Test;
 
 import pt.arquivo.imagesearch.indexing.data.TextDocumentData;
 import pt.arquivo.imagesearch.indexing.processors.DocumentInformationExtractor;
+import pt.arquivo.imagesearch.indexing.utils.ImageSearchIndexingUtil;
+import pt.arquivo.imagesearch.indexing.processors.ImageInformationExtractor;
 import pt.arquivo.imagesearch.indexing.utils.ContentSniffer;
 import pt.arquivo.imagesearch.indexing.utils.MojibakeRepair;
 import pt.arquivo.imagesearch.indexing.utils.FffdRestorer;
@@ -605,6 +607,31 @@ public class TextEncodingTest {
         } finally {
             f.delete();
         }
+    }
+
+    @Test
+    public void urlEscapesInLatin1AreReadAsWindows1252AndUtf8AsUtf8() {
+        assertEquals("show_doc.asp?service_id=servi\u00e7o ci\u00eancia",
+                ImageSearchIndexingUtil.decodeUrlEscapes("show_doc.asp?service_id=servi%e7o+ci%eancia"));
+        assertEquals("administra\u00e7\u00e3o p\u00fablica", ImageSearchIndexingUtil.decodeUrlEscapes("administra%e7%e3o%20p%fablica"));
+        assertEquals("a\u00e7\u00e3o", ImageSearchIndexingUtil.decodeUrlEscapes("a%C3%A7%C3%A3o"));
+        // UTF-8 and a stray Latin-1 byte side by side, a 4-byte sequence, and a byte of the windows-1252 range
+        assertEquals("\u00e7\u00e7", ImageSearchIndexingUtil.decodeUrlEscapes("%C3%A7%e7"));
+        assertEquals("x\uD83D\uDE00y", ImageSearchIndexingUtil.decodeUrlEscapes("x%F0%9F%98%80y"));
+        assertEquals("\u2019", ImageSearchIndexingUtil.decodeUrlEscapes("%92"));
+        // overlong and truncated sequences are Latin-1 bytes, never U+FFFD
+        assertEquals("\u00c3(", ImageSearchIndexingUtil.decodeUrlEscapes("%C3%28"));
+        assertEquals("\u00e3", ImageSearchIndexingUtil.decodeUrlEscapes("%e3"));
+        // raw non-ASCII characters stay, plain URLs and malformed escapes are left alone
+        assertEquals("a\u00e7\u00e3o b", ImageSearchIndexingUtil.decodeUrlEscapes("a\u00e7%e3o+b"));
+        assertEquals("http://a.example/x", ImageSearchIndexingUtil.decodeUrlEscapes("http://a.example/x"));
+        assertEquals("a%zzb", ImageSearchIndexingUtil.decodeUrlEscapes("a%zzb"));
+        assertEquals("100%", ImageSearchIndexingUtil.decodeUrlEscapes("100%"));
+        assertEquals("100%4", ImageSearchIndexingUtil.decodeUrlEscapes("100%4"));
+        assertFalse(ImageInformationExtractor.getURLSrcTokens("http://www.lusa.pt/show_doc.asp?service%5fid=servi%e7o+ci%eancia")
+                .contains("\uFFFD"));
+        assertTrue(ImageInformationExtractor.getURLSrcTokens("http://www.lusa.pt/show_doc.asp?service%5fid=servi%e7o+ci%eancia")
+                .contains("servi\u00e7o ci\u00eancia"));
     }
 
     // ---- control characters ----

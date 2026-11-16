@@ -290,6 +290,83 @@ public class ImageSearchIndexingUtil {
     }
 
 
+    private static final String WINDOWS_1252_C1 = "\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f"
+            + "\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178";
+
+    /**
+     * Decodes the percent-escapes of a URL ("%C3%A7" and "+" for a space, as URLDecoder does). A sequence of escapes that is
+     * valid UTF-8 is read as UTF-8, a byte that is not is read as windows-1252, so that the Latin-1 query strings of older
+     * sites ("servi%e7o") give "serviço" and not U+FFFD. A malformed escape ("%zz", a "%" at the end) leaves the URL as it is.
+     *
+     * @param url URL, possibly with percent-escapes
+     * @return the URL with the escapes decoded
+     */
+    public static String decodeUrlEscapes(String url) {
+        if (url == null || url.indexOf('%') < 0 && url.indexOf('+') < 0)
+            return url;
+        StringBuilder out = new StringBuilder(url.length());
+        byte[] pending = new byte[url.length() / 3 + 1];
+        int count = 0;
+        for (int i = 0; i < url.length(); i++) {
+            char c = url.charAt(i);
+            if (c == '%') {
+                if (i + 2 >= url.length())
+                    return url;
+                int hi = Character.digit(url.charAt(i + 1), 16);
+                int lo = Character.digit(url.charAt(i + 2), 16);
+                if (hi < 0 || lo < 0)
+                    return url;
+                pending[count++] = (byte) (hi << 4 | lo);
+                i += 2;
+                continue;
+            }
+            if (count > 0) {
+                appendEscapedBytes(out, pending, count);
+                count = 0;
+            }
+            out.append(c == '+' ? ' ' : c);
+        }
+        if (count > 0)
+            appendEscapedBytes(out, pending, count);
+        return out.toString();
+    }
+
+    private static void appendEscapedBytes(StringBuilder out, byte[] b, int length) {
+        int i = 0;
+        while (i < length) {
+            int lead = b[i] & 0xFF;
+            int size = lead < 0x80 ? 1 : lead >= 0xC2 && lead <= 0xDF ? 2 : lead >= 0xE0 && lead <= 0xEF ? 3 : lead >= 0xF0 && lead <= 0xF4 ? 4 : 0;
+            if (size > 0 && i + size <= length && isUtf8Sequence(b, i, size)) {
+                out.append(new String(b, i, size, StandardCharsets.UTF_8));
+                i += size;
+            } else {
+                out.append(lead >= 0x80 && lead < 0xA0 ? WINDOWS_1252_C1.charAt(lead - 0x80) : (char) lead);
+                i++;
+            }
+        }
+    }
+
+    private static boolean isUtf8Sequence(byte[] b, int from, int size) {
+        if (size == 1)
+            return true;
+        int lead = b[from] & 0xFF;
+        for (int k = 1; k < size; k++) {
+            int c = b[from + k] & 0xFF;
+            if (c < 0x80 || c > 0xBF)
+                return false;
+        }
+        int second = b[from + 1] & 0xFF;
+        if (lead == 0xE0)
+            return second >= 0xA0;
+        if (lead == 0xED)
+            return second <= 0x9F;
+        if (lead == 0xF0)
+            return second >= 0x90;
+        if (lead == 0xF4)
+            return second <= 0x8F;
+        return true;
+    }
+
     /**
      * Remove symbols from URL to transform into tokens
      *

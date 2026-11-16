@@ -871,11 +871,7 @@ public class ImageInformationExtractor implements InformationExtractor {
      * @return URL tokens
      */
     public static String getURLSrcTokens(String imgSrc)  {
-        try {
-            imgSrc = URLDecoder.decode(imgSrc, "UTF-8"); /*Escape imgSrc URL e.g %C3*/
-        } catch (Exception ignored) {
-
-        }
+        imgSrc = ImageSearchIndexingUtil.decodeUrlEscapes(imgSrc); /*Escape imgSrc URL e.g %C3*/
         if (imgSrc.startsWith("http://") || imgSrc.startsWith("https://")) {
             imgSrc = imgSrc.substring(imgSrc.indexOf("://"));
         }
