@@ -18,7 +18,7 @@ set -euo pipefail
 REPO=${M2_REPO:-/m2/repository}
 [ -d "$REPO" ] || REPO=$HOME/.m2/repository
 
-JAR=${JAR:-target/image-search-indexing.jar}
+JAR=${JAR:-target/image-and-page-search-indexing.jar}
 [ -f "$JAR" ] || { echo "$JAR not found: run 'mvn package -DskipTests' first" >&2; exit 1; }
 
 JUNIT=$(find "$REPO" -name 'junit-4*.jar' | head -1)

@@ -5,9 +5,9 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>org.arquivo</groupId>
-    <artifactId>image-search-indexing</artifactId>
+    <artifactId>image-and-page-search-indexing</artifactId>
     <version>1.1</version>
-    <name>Image Search Indexing</name>
+    <name>Image and Page Search Indexing</name>
     <url>https://arquivo.pt</url>
 
     <properties>
