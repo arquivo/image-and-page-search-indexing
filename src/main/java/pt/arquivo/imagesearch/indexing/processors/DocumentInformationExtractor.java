@@ -15,6 +15,7 @@ import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.counters.GenericCounter;
 import org.apache.log4j.Logger;
 import org.apache.tika.config.TikaConfig;
+import org.apache.tika.detect.EncodingDetector;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.language.detect.LanguageDetector;
 import org.apache.tika.language.detect.LanguageResult;
@@ -29,12 +30,19 @@ import org.apache.tika.sax.TeeContentHandler;
 import org.archive.io.arc.ARCRecord;
 import org.xml.sax.SAXException;
 
+import pt.arquivo.imagesearch.indexing.utils.HttpBodyDecoder;
 import pt.arquivo.imagesearch.indexing.utils.ImageSearchIndexingUtil;
+import pt.arquivo.imagesearch.indexing.utils.CharsetDatasetRow;
+import pt.arquivo.imagesearch.indexing.utils.ContentSniffer;
+import pt.arquivo.imagesearch.indexing.utils.FffdRestorer;
+import pt.arquivo.imagesearch.indexing.utils.MojibakeRepair;
+import pt.arquivo.imagesearch.indexing.utils.TextEncodingDetector;
 import pt.arquivo.imagesearch.indexing.utils.WARCRecordResponseEncapsulated;
 import pt.arquivo.imagesearch.indexing.utils.MimeTypeCounters.PAGE_INDEXER_COUNTERS_DETECTED;
 import pt.arquivo.imagesearch.indexing.utils.MimeTypeCounters.PAGE_INDEXER_COUNTERS_REPORTED;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -54,7 +62,7 @@ public class DocumentInformationExtractor implements InformationExtractor {
      * File extensions to be included when extracting text
      */
     private static final Set<String> FILES_TO_PARSE_MIMETYPES = new HashSet<>(Arrays.asList("application/msword",
-            "application/pdf", "application/postscript", "application/rss+xml", "application/vnd.ms-excel",
+            "application/pdf", "application/postscript", "application/vnd.ms-excel",
             "application/vnd.ms-powerpoint", "application/vnd.oasis.opendocument.text",
             "application/vnd.oasis.opendocument.text-template", "application/vnd.oasis.opendocument.text-master",
             "application/vnd.oasis.opendocument.text-web", "application/vnd.oasis.opendocument.presentation",
@@ -63,9 +71,9 @@ public class DocumentInformationExtractor implements InformationExtractor {
             "application/vnd.sun.xml.calc", "application/vnd.sun.xml.calc.template", "application/vnd.sun.xml.impress",
             "application/vnd.sun.xml.impress.template", "application/vnd.sun.xml.writer",
             "application/vnd.sun.xml.writer.template", "application/xhtml+xml", "application/x-bzip2",
-            "application/x-gzip", "application/x-kword", "application/x-kspread", "application/x-shockwave-flash",
+            "application/x-gzip", "application/gzip", "application/x-kword", "application/x-kspread", "application/x-shockwave-flash",
             "application/zip", "application/rtf", "text/html", "text/plain", "text/richtext", "text/rtf", "text/sgml",
-            "text/tab-separated-values", "text/xml"));
+            "text/tab-separated-values"));
 
     private static final Set<String> METADATA_KEYS = new HashSet<>(
             Arrays.asList("dc:creator", "dc:subject", "dc:description"));
@@ -97,6 +105,18 @@ public class DocumentInformationExtractor implements InformationExtractor {
     private HashMap<String, Counter> tmpCounters;
 
     private HashMap<String, Counter> linkTypes;
+
+    /**
+     * Largest text payload buffered in memory; the rest is dropped
+     */
+    private static final int MAX_TEXT_BYTES = 64 * 1024 * 1024;
+
+    /**
+     * When set, records for each document which charset was declared and which was chosen (keyed by content digest)
+     */
+    private HashMap<String, String[]> charsetDecisions = null;
+    private java.io.Writer charsetDataset = null;
+    private int charsetDatasetAgreePercent = 1;
 
     /**
      * Documents already parsed during this session
@@ -214,6 +234,18 @@ public class DocumentInformationExtractor implements InformationExtractor {
             logger.warn("Skipping record with URL: " + url);
             return;
         }
+        if (isCodeFile(url, mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_CODE).increment(1);
+            return;
+        }
+        if (isXmlData(mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_XML).increment(1);
+            return;
+        }
+        if (isJsonMime(mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_JSON).increment(1);
+            return;
+        }
         parseTextRecord(record, warcName);
 
     }
@@ -254,6 +286,18 @@ public class DocumentInformationExtractor implements InformationExtractor {
             logger.warn("Skipping record with URL: " + url);
             return;
         }
+        if (isCodeFile(url, mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_CODE).increment(1);
+            return;
+        }
+        if (isXmlData(mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_XML).increment(1);
+            return;
+        }
+        if (isJsonMime(mimeType)) {
+            getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_JSON).increment(1);
+            return;
+        }
 
         String timestamp = record.getMetaData().getDate();
         long offset = record.getMetaData().getOffset();
@@ -271,9 +315,24 @@ public class DocumentInformationExtractor implements InformationExtractor {
 
         } else {
             try {
-                parseTextRecord(record, mimeType, arcName, url, timestamp, offset, statusCode);
+                String contentEncoding = null;
+                String transferEncoding = null;
+                String contentType = null;
+                if (record.getHttpHeaders() != null) {
+                    for (org.apache.commons.httpclient.Header h : record.getHttpHeaders()) {
+                        if (h.getName().equalsIgnoreCase("content-encoding"))
+                            contentEncoding = h.getValue();
+                        else if (h.getName().equalsIgnoreCase("transfer-encoding"))
+                            transferEncoding = h.getValue();
+                        else if (h.getName().equalsIgnoreCase("content-type"))
+                            contentType = h.getValue();
+                    }
+                }
+                parseTextRecord(HttpBodyDecoder.decode(record, transferEncoding, contentEncoding), mimeType, arcName, url, timestamp, offset,
+                        statusCode, HttpBodyDecoder.charsetFromContentType(contentType));
             } catch (IOException e) {
                 logger.error("Error parsing text record: " + record.getHeader().getUrl(), e);
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FAILED_DECODING).increment(1);
             }
         }
 
@@ -343,15 +402,38 @@ public class DocumentInformationExtractor implements InformationExtractor {
             parseRedirectRecord(record.getWARCRecord(), mimeType, arcName, url, timestamp, offset, statusCode, redirectUrl);
         } else {
             try {
-                parseTextRecord(record.getWARCRecord(), mimeType, arcName, url, timestamp, offset, statusCode);
+                InputStream decoded = record.getDecodedInputStream();
+                parseTextRecord(decoded, mimeType, arcName, url, timestamp, offset, statusCode,
+                        record.getContentTypeCharset());
             } catch (IOException e) {
-                // TODO Auto-generated catch block
                 logger.error("Error parsing text record: " + url, e);
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FAILED_DECODING).increment(1);
             }
         }
     }
+
     public TextDocumentData parseTextRecord(InputStream record, String mimeType, String arcName, String url,
             String timestamp, long offset, int statusCode) throws IOException {
+        return parseTextRecord(record, mimeType, arcName, url, timestamp, offset, statusCode, null);
+    }
+
+    /** Types read by Tika's XML parser, which does its own decoding. */
+    private static boolean isXml(String mimeType) {
+        return mimeType != null && mimeType.contains("xml") && !mimeType.contains("html");
+    }
+
+    private static boolean isTextLike(String mimeType) {
+        return mimeType != null && (mimeType.startsWith("text/") || mimeType.contains("xml") || mimeType.contains("html"));
+    }
+
+    /**
+     * Parse a text record
+     *
+     * @param record          payload with Content-Encoding already removed
+     * @param declaredCharset charset declared in the HTTP Content-Type header, or null
+     */
+    public TextDocumentData parseTextRecord(InputStream record, String mimeType, String arcName, String url,
+            String timestamp, long offset, int statusCode, String declaredCharset) throws IOException {
         getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_READ).increment(1);
         getCounter(mimeToCounterReported(mimeType)).increment(1);
 
@@ -392,36 +474,145 @@ public class DocumentInformationExtractor implements InformationExtractor {
             return null;
         }
 
-        DigestInputStream stream = new DigestInputStream(record, md5Stream);
-
+        InputStream stream;
+        boolean sourceHasReplacementChar = false;
+        boolean sniffedContainer = false;
+        String metaCharsetLabel = "";
+        String repairReason = null;
+        String xmlReason = null;
+        boolean decodedAsText = isTextLike(mimeType);
         try {
-            if (stream.available() == 0){
-                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_EMPTY).increment(1);
-                return textDocumentData;
+            if (decodedAsText) {
+                // Text is buffered so the encoding detector can look at all of it
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                byte[] chunk = new byte[16384];
+                int n;
+                while (buffer.size() < MAX_TEXT_BYTES && (n = record.read(chunk)) > 0)
+                    buffer.write(chunk, 0, n);
+                byte[] bytes = buffer.toByteArray();
+                if (bytes.length == 0) {
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_EMPTY).increment(1);
+                    return textDocumentData;
+                }
+                md5Stream.update(bytes);
+                sourceHasReplacementChar = TextEncodingDetector.containsReplacementChar(bytes);
+                if (charsetDataset != null && mimeType.contains("html"))
+                    metaCharsetLabel = TextEncodingDetector.metaCharsetLabel(bytes);
+                ContentSniffer.Kind sniffed = ContentSniffer.sniff(bytes);
+                if (sniffed == ContentSniffer.Kind.BINARY) {
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_SNIFFED_BINARY).increment(1);
+                    return textDocumentData;
+                }
+                // JSON served as text/html or text/plain (ad and tracker calls): data for programs
+                if (sniffed == ContentSniffer.Kind.NONE && ContentSniffer.isJsonData(bytes)) {
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_SKIPPED_JSON).increment(1);
+                    return textDocumentData;
+                }
+                sniffedContainer = sniffed == ContentSniffer.Kind.CONTAINER;
+                if (sniffedContainer)
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_SNIFFED_CONTAINER).increment(1);
+                byte[] noBom = sniffedContainer ? null : TextEncodingDetector.dropFalseUtf8Bom(bytes);
+                if (noBom != null) {
+                    bytes = noBom;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FALSE_BOM_DROPPED).increment(1);
+                }
+                byte[] repaired = sniffedContainer ? null : TextEncodingDetector.repairStrayBytes(bytes, declaredCharset);
+                if (repaired != null) {
+                    repairReason = "UTF8_REPAIRED";
+                } else if (!sniffedContainer) {
+                    repaired = TextEncodingDetector.repairEmbeddedUtf8(bytes, declaredCharset);
+                    if (repaired != null)
+                        repairReason = "LATIN_REPAIRED";
+                }
+                if (repaired != null)
+                    bytes = repaired;
+                byte[] c1 = sniffedContainer ? null : TextEncodingDetector.repairC1InUtf8(bytes, declaredCharset);
+                if (c1 != null) {
+                    bytes = c1;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_C1_CONTROLS_REMAPPED).increment(1);
+                }
+                byte[] noPictographs = sniffedContainer ? null : TextEncodingDetector.replacePictographs(bytes, declaredCharset);
+                if (noPictographs != null) {
+                    bytes = noPictographs;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_PICTOGRAPHS_REPLACED).increment(1);
+                }
+                byte[] noUndefined = sniffedContainer ? null : TextEncodingDetector.dropUndefinedLatinBytes(bytes, declaredCharset);
+                if (noUndefined != null) {
+                    bytes = noUndefined;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_UNDEFINED_LATIN_BYTES_DROPPED).increment(1);
+                }
+                byte[] stripped = sniffedContainer ? null : TextEncodingDetector.stripControlBytes(bytes);
+                if (stripped != null) {
+                    bytes = stripped;
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_CONTROL_CHARS_STRIPPED).increment(1);
+                }
+                if (mimeType.contains("html") && !sniffedContainer) {
+                    byte[] refs = TextEncodingDetector.repairControlReferences(bytes);
+                    if (refs != null) {
+                        bytes = refs;
+                        getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_CONTROL_REFERENCES_REPAIRED).increment(1);
+                    }
+                }
+                if (isXml(mimeType) && !sniffedContainer) {
+                    TextEncodingDetector.XmlResult xml = TextEncodingDetector.xmlToUtf8(bytes, declaredCharset);
+                    bytes = xml.bytes;
+                    xmlReason = xml.resolution.reason.name();
+                }
+                stream = new ByteArrayInputStream(bytes);
+            } else {
+                BufferedInputStream buffered = new BufferedInputStream(record);
+                buffered.mark(1);
+                if (buffered.read() < 0) {
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_EMPTY).increment(1);
+                    return textDocumentData;
+                }
+                buffered.reset();
+                stream = new DigestInputStream(buffered, md5Stream);
             }
         } catch (IOException e) {
-            logger.error("Error parsing record: " + url, e);
+            logger.error("Error reading record: " + url, e);
+            getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FAILED_DECODING).increment(1);
+            return textDocumentData;
         }
 
          Parser parser = null;
-         if (mimeType.equals("text/html")) {
+         if (mimeType.equals("text/html") && !sniffedContainer) {
              parser = new HtmlParser();
          } else {
              parser = new AutoDetectParser(config);
          }
 
         Metadata metadata = new Metadata();
+        if (declaredCharset != null)
+            metadata.set(TextEncodingDetector.DECLARED_CHARSET, declaredCharset);
+        // Tika's magic detection calls text in legacy 8-bit charsets application/octet-stream; the hint only applies
+        // when it finds nothing more specific
+        if (isTextLike(mimeType) && !mimeType.equals("text/html") && !sniffedContainer)
+            metadata.set(Metadata.CONTENT_TYPE, mimeType);
         BodyContentHandler bodyHandler = new BodyContentHandler(CONTENT_CHAR_LIMIT);
 
         // Add anchor text to the content
         LinkContentHandler linkHandler = new LinkContentHandler();
         TeeContentHandler handler = new TeeContentHandler(bodyHandler, linkHandler);
         ParseContext context = new ParseContext();
+        context.set(EncodingDetector.class, new TextEncodingDetector());
 
         try {
             parser.parse(stream, handler, metadata, context);
 
-            // String detectedEncoding = metadata.get("Content-Encoding");
+            if (repairReason != null)
+                metadata.set(TextEncodingDetector.RESOLUTION_REASON, repairReason);
+            else if (xmlReason != null)
+                metadata.set(TextEncodingDetector.RESOLUTION_REASON, xmlReason);
+            String charsetReason = metadata.get(TextEncodingDetector.RESOLUTION_REASON);
+            if (charsetReason != null)
+                getCounter(DOCUMENT_COUNTERS.valueOf("CHARSET_" + charsetReason)).increment(1);
+            if (charsetReason != null && (!charsetReason.startsWith("UTF8") || repairReason != null) && !charsetReason.equals("ASCII")
+                    && !charsetReason.equals("BOM") && !charsetReason.equals("DECLARED_HTTP"))
+                logger.info("Charset " + charsetReason + " -> " + metadata.get(TextEncodingDetector.RESOLVED_CHARSET)
+                        + " (declared " + declaredCharset + ") " + timestamp + " " + url + " " + arcName + "@" + offset);
+            if (TextEncodingDetector.Reason.BINARY.name().equals(charsetReason))
+                return textDocumentData;
             String detectedMimeType = metadata.get("Content-Type").split(";")[0].trim();
 
             textDocumentData.setMimeTypeDetected(detectedMimeType);
@@ -450,6 +641,13 @@ public class DocumentInformationExtractor implements InformationExtractor {
         try {
 
             String body = bodyHandler.toString();
+            // PDFBox and POI emit the glyph code of characters without a Unicode mapping as a control character, and
+            // Tika turns it into U+FFFD. The letter is lost either way; a space keeps words from being glued together
+            String contentType = metadata.get("Content-Type");
+            if (body.indexOf('\uFFFD') >= 0 && contentType != null && !isTextLike(contentType.split(";")[0].trim())) {
+                body = body.replaceAll("\uFFFD+", " ");
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_UNMAPPED_GLYPHS_REPLACED).increment(1);
+            }
             body = removeJunkCharacters(body);
 
             if (body.isEmpty()) {
@@ -460,6 +658,8 @@ public class DocumentInformationExtractor implements InformationExtractor {
             LanguageDetector detector = LanguageDetector.getDefaultLanguageDetector().loadModels();
 
             detector.addText(body);
+            // Whether the page is Portuguese is decided by its body alone: titles and anchor texts often name foreign works
+            LanguageResult bodyLanguage = detector.detect();
 
             String title = metadata.get("dc:title");
 
@@ -471,8 +671,6 @@ public class DocumentInformationExtractor implements InformationExtractor {
             if (title == null || title.isEmpty())
                 title = body.substring(0, Math.min(body.length(), TITLE_FROM_BODY_MAX_LENGTH));
 
-            textDocumentData.addTitle(title);
-            
             detector.addText(title);
 
             LanguageResult languageResult = detector.detect();
@@ -481,6 +679,33 @@ public class DocumentInformationExtractor implements InformationExtractor {
                 textDocumentData.setLanguage(languageResult.getLanguage());
                 textDocumentData.setLanguageConfidence(languageResult.getConfidence().toString());
             }
+
+            // Pages in Portuguese that carry double-encoded text ("CidadÃ£os") are repaired; other languages are left as they are
+            final boolean portuguese = bodyLanguage != null && "pt".equals(bodyLanguage.getLanguage());
+            boolean mojibakeRepaired = false;
+            // restored U+FFFD, counted over body, title, metadata and anchor texts
+            final int[] restoredTokens = new int[1];
+            final FffdRestorer restorer = portuguese ? FffdRestorer.getInstance() : null;
+            boolean brazilianSpelling = false;
+            if (portuguese) {
+                String repairedBody = MojibakeRepair.repair(body);
+                String repairedTitle = MojibakeRepair.repair(title);
+                mojibakeRepaired = repairedBody != body || repairedTitle != title;
+                if (mojibakeRepaired)
+                    getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_MOJIBAKE_REPAIRED).increment(1);
+                body = repairedBody;
+                title = repairedTitle;
+                if (restorer != null && body.indexOf('\uFFFD') >= 0) {
+                    brazilianSpelling = restorer.isBrazilian(body);
+                    FffdRestorer.Result restoredBody = restorer.restore(body, brazilianSpelling);
+                    FffdRestorer.Result restoredTitle = restorer.restore(title, brazilianSpelling);
+                    body = restoredBody.text;
+                    title = restoredTitle.text;
+                    restoredTokens[0] += restoredBody.restored + restoredTitle.restored;
+                }
+            }
+            final boolean brazilian = brazilianSpelling;
+            textDocumentData.addTitle(title);
 
             List<String> metadataStrings = new LinkedList<>();
 
@@ -493,12 +718,28 @@ public class DocumentInformationExtractor implements InformationExtractor {
             }
 
             String metadataString = removeJunkCharacters(String.join("\n", metadataStrings).trim());
+            if (portuguese) {
+                metadataString = MojibakeRepair.repair(metadataString);
+                if (restorer != null) {
+                    FffdRestorer.Result restoredMetadata = restorer.restore(metadataString, brazilian);
+                    metadataString = restoredMetadata.text;
+                    restoredTokens[0] += restoredMetadata.restored;
+                }
+            }
 
             textDocumentData.addMetadata(metadataString);
 
             linkHandler.getLinks().forEach(link -> {
                 String linkURL = link.getUri();
                 String anchorText = removeJunkCharacters(link.getText());
+                if (portuguese) {
+                    anchorText = MojibakeRepair.repair(anchorText);
+                    if (restorer != null) {
+                        FffdRestorer.Result restoredAnchor = restorer.restore(anchorText, brazilian);
+                        anchorText = restoredAnchor.text;
+                        restoredTokens[0] += restoredAnchor.restored;
+                    }
+                }
                 if (anchorText.length() > ANCHOR_CHAR_LIMIT) {
                     anchorText = anchorText.substring(0, ANCHOR_CHAR_LIMIT);
                 }
@@ -510,18 +751,33 @@ public class DocumentInformationExtractor implements InformationExtractor {
             });
 
 
-            md5Text.update((body+"\t").getBytes());
-            md5Text.update((metadataString+"\t").getBytes());
-            md5Text.update((title+"\t").getBytes());
+            md5Text.update((body+"\t").getBytes(StandardCharsets.UTF_8));
+            md5Text.update((metadataString+"\t").getBytes(StandardCharsets.UTF_8));
+            md5Text.update((title+"\t").getBytes(StandardCharsets.UTF_8));
 
             HexBinaryAdapter hexBinaryAdapter = new HexBinaryAdapter();
             String digest = hexBinaryAdapter.marshal(md5Text.digest());
 
-            String warcDigest = hexBinaryAdapter.marshal(stream.getMessageDigest().digest());
+            String warcDigest = hexBinaryAdapter.marshal(md5Stream.digest());
             textDocumentData.setDigestContent(digest);
             textDocumentData.setDigestContainer(warcDigest);
 
             textDocumentData.addContent(body);
+
+            if (sourceHasReplacementChar)
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_SOURCE_HAS_REPLACEMENT_CHAR).increment(1);
+            if (restoredTokens[0] > 0) {
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FFFD_RESTORED).increment(1);
+                getCounter(DOCUMENT_COUNTERS.RECORDS_TIKA_FFFD_TOKENS_RESTORED).increment(restoredTokens[0]);
+            }
+            if (charsetDataset != null && decodedAsText && !sniffedContainer && !mojibakeRepaired && restoredTokens[0] == 0
+                    && (mimeType.contains("html") || mimeType.equals("text/plain")))
+                writeCharsetDatasetRow(textDocumentData, url, timestamp, arcName, offset, declaredCharset, metaCharsetLabel,
+                        metadata.get(TextEncodingDetector.RESOLVED_CHARSET),
+                        repairReason != null ? repairReason : metadata.get(TextEncodingDetector.RESOLUTION_REASON), repairReason != null);
+            if (charsetDecisions != null)
+                charsetDecisions.put(digest, new String[] { declaredCharset, metadata.get(TextEncodingDetector.RESOLVED_CHARSET),
+                        metadata.get(TextEncodingDetector.RESOLUTION_REASON), String.valueOf(sourceHasReplacementChar) });
 
             insertDocumentIndex(textDocumentData);
             getCounter(DOCUMENT_COUNTERS.RECORDS_SUCCESS).increment(1);
@@ -626,6 +882,51 @@ public class DocumentInformationExtractor implements InformationExtractor {
 
     }
 
+    /**
+     * Starts recording the declared and chosen charset of every parsed document (for local analysis)
+     */
+    public void trackCharsetDecisions() {
+        charsetDecisions = new HashMap<>();
+    }
+
+    /**
+     * Content digest -> {declared charset, chosen charset, reason, "true" if the source bytes already contained U+FFFD}; null unless tracking was enabled
+     */
+    /**
+     * Optional dataset of pages whose reported charset differs from the detected one (plus a sample of agreeing pages),
+     * one line per captured URL, to tune other replayers. Pages whose text was repaired afterwards are left out, since the
+     * detection may have been wrong to begin with.
+     *
+     * Pages without an HTTP charset are always included, since that is where a replayer has to guess.
+     *
+     * @param agreePercent share (0-100) of the other agreeing pages to include
+     */
+    public void setCharsetDataset(java.io.Writer writer, int agreePercent) {
+        this.charsetDataset = writer;
+        this.charsetDatasetAgreePercent = agreePercent;
+    }
+
+    private void writeCharsetDatasetRow(TextDocumentData doc, String url, String timestamp, String warc, long offset,
+            String httpCharset, String metaCharset, String detected, String reason, boolean mixed) {
+        if (detected == null || reason == null || reason.equals("ASCII") || reason.equals("BINARY"))
+            return;
+        boolean agrees = CharsetDatasetRow.agrees(httpCharset, metaCharset, detected);
+        boolean noHttpCharset = httpCharset == null || httpCharset.trim().isEmpty();
+        if (agrees && !noHttpCharset && Math.floorMod((url + timestamp).hashCode(), 100) >= charsetDatasetAgreePercent)
+            return;
+        String surt = doc.getSurts() == null || doc.getSurts().isEmpty() ? "" : doc.getSurts().get(0);
+        try {
+            charsetDataset.write(CharsetDatasetRow.format(url, timestamp, surt, collection, warc, offset, httpCharset, metaCharset,
+                    detected, reason, mixed, agrees) + "\n");
+        } catch (IOException e) {
+            logger.error("Error writing charset dataset row: " + url, e);
+        }
+    }
+
+    public HashMap<String, String[]> getCharsetDecisions() {
+        return charsetDecisions;
+    }
+
     public HashMap<String, TextDocumentData> getEntries() {
         return entries;
     }
@@ -659,6 +960,59 @@ public class DocumentInformationExtractor implements InformationExtractor {
                 entriesRedirect.put(surt, pageImageData);
             }
         }
+    }
+
+    /** Extensions of source code and style sheets, which are not worth indexing as text. */
+    private static final Set<String> CODE_EXTENSIONS = new HashSet<>(Arrays.asList("js", "mjs", "cjs", "jsx", "ts", "tsx", "map",
+            "css", "scss", "sass", "less", "java", "c", "h", "cc", "cpp", "cxx", "hpp", "cs", "py", "rb", "go", "rs", "sh",
+            "bat", "lua", "swift", "kt", "scala"));
+
+    /** Types reported for source code and style sheets. */
+    private static final Set<String> CODE_MIMETYPES = new HashSet<>(Arrays.asList("text/javascript", "application/javascript",
+            "application/x-javascript", "application/ecmascript", "text/ecmascript", "text/jscript", "text/css", "text/x-c",
+            "text/x-csrc", "text/x-chdr", "text/x-c++src", "text/x-c++hdr", "text/x-java", "text/x-java-source", "text/x-python",
+            "text/x-script.python", "application/x-python-code", "text/x-perl", "text/x-ruby", "text/x-shellscript",
+            "application/x-sh", "application/x-csh", "text/x-php", "application/x-httpd-php-source"));
+
+    private static final java.util.regex.Pattern XML_MIMETYPE = java.util.regex.Pattern.compile("^[a-z]+/([a-z0-9.\\-]+\\+)?xml$");
+
+    /** JSON meant for programs (API responses, manifests): not worth indexing. */
+    public static boolean isJsonMime(String mimeType) {
+        if (mimeType == null)
+            return false;
+        String type = mimeType.split(";")[0].trim().toLowerCase(Locale.ROOT);
+        return type.contains("json") && !type.contains("javascript");
+    }
+
+    /** XML meant for programs (feeds, sitemaps, data): not worth indexing. XHTML is HTML and stays. */
+    public static boolean isXmlData(String mimeType) {
+        if (mimeType == null)
+            return false;
+        String type = mimeType.split(";")[0].trim().toLowerCase(Locale.ROOT);
+        return XML_MIMETYPE.matcher(type).matches() && !type.contains("html");
+    }
+
+    /**
+     * True for source code and style sheets: by the reported type or, for records not reported as HTML (CGI scripts and
+     * repository viewers end in .pl/.py/.c and are HTML pages), by the extension of the URL path (query and fragment ignored).
+     */
+    public static boolean isCodeFile(String url, String mimeType) {
+        String type = mimeType == null ? "" : mimeType.split(";")[0].trim().toLowerCase(Locale.ROOT);
+        if (CODE_MIMETYPES.contains(type))
+            return true;
+        if (url == null || type.contains("html"))
+            return false;
+        int end = url.length();
+        int cut = url.indexOf('#');
+        if (cut >= 0)
+            end = cut;
+        cut = url.indexOf('?');
+        if (cut >= 0 && cut < end)
+            end = cut;
+        String path = url.substring(0, end);
+        String last = path.substring(path.lastIndexOf('/') + 1);
+        int dot = last.lastIndexOf('.');
+        return dot >= 0 && CODE_EXTENSIONS.contains(last.substring(dot + 1).toLowerCase(Locale.ROOT));
     }
 
     private boolean allowURL(String url) {

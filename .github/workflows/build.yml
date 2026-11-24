@@ -27,8 +27,5 @@ jobs:
     - name: Compile
       run: mvn compile
 
-    - name: Run tests
-      run: mvn test
-
-    - name: Package
-      run: mvn package -DskipTests
+    - name: Unit tests, package, tests against the packaged fat jar
+      run: mvn verify

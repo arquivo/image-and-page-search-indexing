@@ -55,7 +55,7 @@ For each entry in Map<String (SURT), List<(Document || Inlink)> >
 
 ```mvn clean install``` 
 
-The compiled jar with dependencies will be placed in target/image-search-indexing.jar
+The compiled jar with dependencies will be placed in target/image-and-page-search-indexing.jar
 
 ## Run
 
@@ -63,7 +63,7 @@ The compiled jar with dependencies will be placed in target/image-search-indexin
 Create a .txt file where each line contains the path to a downloadable ARC/WARC file (WARC list file) and store it in Hadoop HDFS
 
 ```
-hadoop jar image-search-indexing.jar pt.arquivo.imagesearch.indexing.FullImageIndexerJob <WARC list location in HDFS> <collection name> <WARCs per map> <number of reduces> <WARCs in HDFS: true or false> <output format: COMPACT or FULL>
+hadoop jar image-and-page-search-indexing.jar pt.arquivo.imagesearch.indexing.FullImageIndexerJob <WARC list location in HDFS> <collection name> <WARCs per map> <number of reduces> <WARCs in HDFS: true or false> <output format: COMPACT or FULL>
 ```
 
 **WARC list location in HDFS**: Location of the (W)ARC file list in HDFS
